@@ -1,0 +1,16 @@
+{application, body_head, [
+    {description, "A GRiSP application"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {body_head, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        grisp
+    ]},
+    {env,[]},
+    {modules, []},
+
+    {licenses, ["Apache 2.0"]},
+    {links, []}
+]}.
