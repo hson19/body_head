@@ -12,9 +12,9 @@
 %--- API -----------------------------------------------------------------------
 set_args(nav3) ->
     Cn = nav3:calibrate(),
-    R0 = kalman_filter:calibrate(element(3, Cn)),
+    R0 = e1:calibrate(element(3, Cn)),
     update_table({{nav3, node()}, Cn}),
-    update_table({{kalman_filter, node()}, R0}).
+    update_table({{e1, node()}, R0}).
 
 launch() ->
     try launch(nil) of
@@ -55,9 +55,9 @@ stop(_State) ->
 %--- Internal functions ---------------------------------------------------------
 launch(_) ->
     Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
-    R0 = ets:lookup_element(args, {kalman_filter, node()}, 2),
+    R0 = ets:lookup_element(args, {e1, node()}, 2),
     {ok,_} = hera:start_measure(nav3,Cn),
-    {ok,_} = hera:start_measure(kalman_filter,R0),
+    {ok,_} = hera:start_measure(e1,R0),
     ok.
 
 init_table() ->
