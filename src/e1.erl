@@ -107,7 +107,7 @@ measure({T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0, HeadXpos, HeadPpos, H
             {BodyXpos1,BodyPpos1} =  kalman:kf_update({BodyXpos0, BodyPpos0}, Hpos, Rpos, BodyZpos),
             
             io:format("BodyXpos1: ~p~n", [BodyXpos1]),
-            Valpos = lists:append(BodyXpos1,HeadXpos0),
+            Valpos = lists:append([[T1],BodyXpos1,HeadXpos0]),
             {ok, Valpos , {T1,BodyXpos1, BodyPpos1, BodyXor, BodyPor, BodyR0, HeadXpos0, HeadPpos0, HeadXor, HeadPor, HeadR0}}
     end.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

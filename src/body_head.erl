@@ -12,9 +12,9 @@
 %--- API -----------------------------------------------------------------------
 set_args(nav3) ->
     Cn = nav3:calibrate(),
-    R0 = e1:calibrate(element(3, Cn)),
+    R0 = e2:calibrate(element(3, Cn)),
     update_table({{nav3, node()}, Cn}),
-    update_table({{e1, node()}, R0}).
+    update_table({{e2, node()}, R0}).
 
 launch() ->
     try launch(nil) of
@@ -40,8 +40,15 @@ stop_all() ->
 start(_Type, _Args) -> 
     {ok,Supervisor}=body_head_sup:start_link(),
     init_table(),
-    _ = grisp:add_device(spi2,pmod_nav),
+    
     io:format("Contents of ETS table args: ~p~n", [ets:tab2list(args)]),
+    case node_type() of
+        bodypart -> _ = grisp:add_device(spi2,pmod_nav);
+        undefined -> 
+            _ = net_kernel:set_net_ticktime(8),
+            lists:foreach(fun net_kernel:connect_node/1,
+            application:get_env(kernel, sync_nodes_optional, []))            
+    end,
     _ = launch(),
     {ok,Supervisor}.
 
@@ -55,9 +62,9 @@ stop(_State) ->
 %--- Internal functions ---------------------------------------------------------
 launch(_) ->
     Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
-    R0 = ets:lookup_element(args, {e1, node()}, 2),
+    R0 = ets:lookup_element(args, {e2, node()}, 2),
     {ok,_} = hera:start_measure(nav3,Cn),
-    {ok,_} = hera:start_measure(e1,R0),
+    {ok,_} = hera:start_measure(e2,R0),
     ok.
 
 init_table() ->
@@ -71,3 +78,15 @@ init_table() ->
 update_table(Object) ->
     _ = rpc:multicall(ets, insert, [args, Object]),
     ok.
+node_type() ->
+    Host = lists:nthtail(10, atom_to_list(node())), % TODO CHANGE THIS if node name changes
+    io:format("Host: ~p~n", [Host]),
+    IsBody = lists:prefix("body", Host),
+    Ishead = lists:prefix("head", Host),
+    io:format("IsBody: ~p~n", [IsBody]),
+    io:format("Ishead: ~p~n", [Ishead]),
+    if
+        IsBody -> bodypart;
+        Ishead -> bodypart;
+        true -> undefined
+    end.
