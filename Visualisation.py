@@ -5,8 +5,9 @@ from scipy.spatial.transform import Rotation as R
 from matplotlib.animation import FuncAnimation
 from scipy.spatial import Delaunay
 import pandas as pd
-
-
+from matplotlib.patches import FancyArrowPatch
+from mpl_toolkits.mplot3d.proj3d import proj_transform
+from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 
 def quaternion_to_rotation_matrix(quaternion):
@@ -85,6 +86,10 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     quaternionObserved.append([float(line[11]), float(line[12]), float(line[13]), float(line[14])])
     position.append([float(line[15]), float(line[18]), float(line[21])])
 
+    # take the conjugate of the quaternion
+    quaternion[0] = [quaternion[0][0], -quaternion[0][1], -quaternion[0][2], -quaternion[0][3]]
+    quaternionPredicted[0] = [quaternionPredicted[0][0], -quaternionPredicted[0][1], -quaternionPredicted[0][2], -quaternionPredicted[0][3]]
+    quaternionObserved[0] = [quaternionObserved[0][0], -quaternionObserved[0][1], -quaternionObserved[0][2], -quaternionObserved[0][3]] 
     ax.clear()  # Clear the previous plot
     # position = position_data[frame]
     position = [0,0,0]
@@ -104,9 +109,18 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     transformed_verticesPredicted = np.array(transformed_verticesPredicted)
     transformed_verticesObserved = np.array(transformed_verticesObserved)
 
-    x = transformed_vertices[:,0]
-    y = transformed_vertices[:,1]
-    z = transformed_vertices[:,2]
+    x = transformed_vertices[:,0] # North
+    y = transformed_vertices[:,1] # UP
+    z = transformed_vertices[:,2] # East
+    
+    transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position)
+    transformed_arrowxPredicted ,transformed_arrowyPredicted,transformed_arrowzPredicted  = transformInitSpate(rotation_matrixPredicted,position)
+    transformed_arrowxObserved ,transformed_arrowyObserved,transformed_arrowzObserved  = transformInitSpate(rotation_matrixObserved,position)
+
+    # drawArrow(ax,position,rotation_matrix)
+    drawArrow(ax,position,rotation_matrixPredicted)
+    drawArrow(ax,position,rotation_matrixObserved,dashed=True)
+
     xPredicted = transformed_verticesPredicted[:,0]
     yPredicted = transformed_verticesPredicted[:,1]
     zPredicted = transformed_verticesPredicted[:,2]
@@ -115,16 +129,16 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     zObserved = transformed_verticesObserved[:,2]
 
 
-    tri = Delaunay(transformed_verticesPredicted[:, :2])
-    ax.plot_trisurf(xPredicted,yPredicted,zPredicted, triangles=tri.simplices,color='r',label='Predicted')
+    # tri = Delaunay(transformed_verticesPredicted[:, :2])
+    # ax.plot_trisurf(xPredicted,yPredicted,zPredicted, triangles=tri.simplices,color='r',label='Predicted')
 
-    tri = Delaunay(transformed_verticesObserved[:, :2])
-    ax.plot_trisurf(xObserved,yObserved,zObserved, triangles=tri.simplices,color='b',label='Observed')
+    # tri = Delaunay(transformed_verticesObserved[:, :2])
+    # ax.plot_trisurf(xObserved,yObserved,zObserved, triangles=tri.simplices,color='b',label='Observed')
     
     # tri = Delaunay(transformed_vertices[:, :2])
     # ax.plot_trisurf(x,y,z, triangles=tri.simplices,color='g',label='Kalman Filtered')
 
-    plt.legend()
+
 
     ax.set_xlim(-20 , 30)
     ax.set_ylim(-20 , 30)
@@ -197,6 +211,60 @@ def getAverageTime():
         sum+=time
     print(sum/len(data))
     return sum/len(data)
+
+class Arrow3D(FancyArrowPatch):
+
+    def __init__(self, x, y, z, dx, dy, dz, *args, **kwargs):
+        super().__init__((0, 0), (0, 0), *args, **kwargs)
+        self._xyz = (x, y, z)
+        self._dxdydz = (dx, dy, dz)
+
+    def draw(self, renderer):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+        super().draw(renderer)
+        
+    def do_3d_projection(self, renderer=None):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+
+        return np.min(zs) 
+def _arrow3D(ax, x, y, z, dx, dy, dz, *args, **kwargs):
+    '''Add an 3d arrow to an `Axes3D` instance.'''
+
+    arrow = Arrow3D(x, y, z, dx, dy, dz, *args, **kwargs)
+    ax.add_artist(arrow)
+
+
+setattr(Axes3D, 'arrow3D', _arrow3D) 
+
+def transformInitSpate(rotation_matrix,position):
+    transformed_arrowx  = np.matmul(np.array(rotation_matrix), np.array([10,0,0])) + position
+    transformed_arrowy = np.matmul(np.array(rotation_matrix), np.array([0,10,0])) + position
+    transformed_arrowz = np.matmul(np.array(rotation_matrix), np.array([0,0,10])) + position
+    return transformed_arrowx,transformed_arrowy,transformed_arrowz
+
+def transformArrow(x,y,z,rotation_matrix,position):
+    transformed_arrow  = np.matmul(np.array(rotation_matrix), np.array([x,y,z])) + position 
+    return transformed_arrow
+def drawArrow(ax,position,rotation_matrix,dashed=False):
+    transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position)
+    if dashed:
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=20,fc='blue',linestyle='dashed')
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowy[0],transformed_arrowy[1],transformed_arrowy[2],mutation_scale=20,fc='green',linestyle='dashed')
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowz[0],transformed_arrowz[1],transformed_arrowz[2],mutation_scale=20,fc='red',linestyle='dashed')
+    else:
+        ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowx[0],position[1]+transformed_arrowx[1],position[2]+transformed_arrowx[2],mutation_scale=20,fc='blue')
+        ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowy[0],position[1]+transformed_arrowy[1],position[2]+transformed_arrowy[2],mutation_scale=20,fc='green')
+        ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowz[0],position[1]+transformed_arrowz[1],position[2]+transformed_arrowz[2],mutation_scale=20,fc='red')
 
 ID = 0
 live = True

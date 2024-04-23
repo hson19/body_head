@@ -22,8 +22,8 @@ calibrate({MBx,MBy,MBz}) ->
     _ = io:get_line("Place the pmod_nav at 0° then press enter"),
     [Ax,Ay,Az] = calibrate(acc, [out_x_xl, out_y_xl, out_z_xl], 100),
     [Mx,My,Mz] = calibrate(mag, [out_x_m, out_y_m, out_z_m], 10),
-    R0 = ahrs([Ax,Ay,Az], [-(Mx-MBx),My-MBy,-(Mz-MBz)]),
-    io:format("Calibration matrice at calibration: ~p~n", [mat:tr(R0)]),
+    R0 = ahrs([Ax,Ay,Az], [-(Mx-MBx),My-MBy,-(Mz-MBz)]), 
+    io:format("Calibration matrice at calibration e2: ~p~n", [mat:tr(R0)]),
     mat:tr(R0).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -67,7 +67,9 @@ measure({T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}) ->
         length(NavHead) == 0 -> % no measure
             {undefined, {T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}};
         true ->
+            
             {Acc,RotAcc,Gyro, Mag} = process_nav(NavHead, BodyR0),
+            io:format("acceleration read ~p~n",[Acc]),
             Dt = (T1-T0)/1000,
             Qc = observationModel(BodyXor,Acc,Mag,BodyR0),
             {_, Xor1,Por1,Xorp}=kalmanQuaternion(Acc, Mag, Gyro, Dt,BodyXor,BodyPor,BodyR0,Qc), %Acc,Mag,Gyro,Dt,BodyXor,P0,R0
@@ -176,11 +178,17 @@ q2dcm([[Q0], [Q1], [Q2], [Q3]]) ->
 kalmanQuaternion(Acc,Mag,Gyro,Dt,BodyXor,P0,R0,Quat) ->
     [Wx,Wy,Wz] = Gyro,
 
+    % Omega = [
+    %     [0,-Wx,-Wy,-Wz],
+    %     [Wx,0,Wz,-Wy],
+    %     [Wy,-Wz,0,Wx],
+    %     [Wz,Wy,-Wx,0]
+    % ],
     Omega = [
-        [0,-Wx,-Wy,-Wz],
-        [Wx,0,Wz,-Wy],
-        [Wy,-Wz,0,Wx],
-        [Wz,Wy,-Wx,0]
+        [0,Wz,-Wy,Wx],
+        [-Wz,0,Wx,Wy],
+        [Wy,-Wx,0,Wz],
+        [-Wx,-Wy,-Wz,0]
     ],
     F = mat:'+'(mat:eye(4), mat:'*'(0.5*Dt, Omega)),
     Q = mat:diag([?VAR_Q,?VAR_Q,?VAR_Q,?VAR_Q]),
@@ -197,14 +205,10 @@ kalmanQuaternion(Acc,Mag,Gyro,Dt,BodyXor,P0,R0,Quat) ->
     % {Xor1,Por1} = {Xorp, Porp}, % gyro only
     io:format("Xor1 ~p~n",[Xor1]),
     io:format("Quat ~p~n",[Quat]),
-    [[Qp1],[Qp2],[Qp3],[Qp4]]=Xorp,
-    Normp=math:sqrt(Qp1*Qp1+Qp2*Qp2+Qp3*Qp3+Qp4*Qp4),
-    UnitXorp = [[Qp1/Normp],[Qp2/Normp],[Qp3/Normp],[Qp4/Normp]],
+    UnitXorp = unit(Xorp),
 
     % UnitXor1 = unit(Xor1),
-    [[Q1],[Q2],[Q3],[Q4]]=Xor1,
-    Norm=math:sqrt(Q1*Q1+Q2*Q2+Q3*Q3+Q4*Q4),
-    UnitXor1 = [[Q1/Norm],[Q2/Norm],[Q3/Norm],[Q4/Norm]],
+    UnitXor1 = unit(Xor1),
     {ok, UnitXor1,Por1,UnitXorp}.
 
 kalmanPositionPredict(Acc,Q,Dtpos,Pos,Ppos) ->
@@ -249,15 +253,16 @@ observationModel(Qn,Acc,Mag,R0) ->
     Mua = 1, %0.005, %TODO FIND VALUE 
     [[Q0],[Q1],[Q2],[Q3]]=Qn,
     Qinv = [[Q0],[-Q1],[-Q2],[-Q3]],
-    C= q2dcm(Qinv), % Q should be a 4x1 vector
-    Gn = [[0],[-1],[0]], % NOT 9.81 because we need unit vector  VHat*Vg= |VHat|*|Vg|*cos(theta)
+    C= q2dcm(Qn), % Q should be a 4x1 vector
+    Gn = [[0],[-1],[0]], % NOT 9.81 because we need unit vector  VHat*Vg= VHat*Vg/(|Vhat|*|Vg|)*cos(theta)
     MagN= [[1],[1],[0]], 
     % estimated vector of gravity and magnetic field
-    VgHat= unit(mat:'*'(C,Gn)),
-    [[VgHatX],[VgHatY],[VgHatZ]]=VgHat,
+    % VgHat= unit(mat:'*'(C,Gn)),
+    VgHat = unit(quatTransfomation(Qn,[[0],[0],[-1],[0]])),
+    [[_],[VgHatX],[VgHatY],[VgHatZ]]=VgHat,
     VmHat=unit(mat:'*'(C,MagN)), 
     % measured vector of gravity  and magnetic field
-    Vg= unit(Acc),
+    Vg= unit([-A||A<-Acc]),
     Vm=unit(Mag),
     Na= cross_product([VgHatX,VgHatY,VgHatZ],Vg),
     Domega= math:acos(dot([VgHatX,VgHatY,VgHatZ],Vg)),
@@ -270,6 +275,8 @@ observationModel(Qn,Acc,Mag,R0) ->
     io:format("Qae ~p~n",[[Qae2,Qae3,Qae4]]),
     Qae1= math:cos(Mua*Domega/2),
     Qa = q_product([[Qae1],[Qae2],[Qae3],[Qae4]],Qn),
+    io:format("Qa ~p~n",[Qa]),
+    io:format("Qn ~p~n",[Qn]),
     Qa.
     
 
