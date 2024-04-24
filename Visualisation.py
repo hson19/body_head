@@ -13,12 +13,17 @@ from mpl_toolkits.mplot3d.axes3d import Axes3D
 def quaternion_to_rotation_matrix(quaternion):
     q = np.array(quaternion)
     q /= np.linalg.norm(q)
-    rotation_matrix = np.array([
-        [1 - 2*q[2]**2 - 2*q[3]**2, 2*q[1]*q[2] - 2*q[0]*q[3], 2*q[1]*q[3] + 2*q[0]*q[2]],
-        [2*q[1]*q[2] + 2*q[0]*q[3], 1 - 2*q[1]**2 - 2*q[3]**2, 2*q[2]*q[3] - 2*q[0]*q[1]],
-        [2*q[1]*q[3] - 2*q[0]*q[2], 2*q[2]*q[3] + 2*q[0]*q[1], 1 - 2*q[1]**2 - 2*q[2]**2]
+    # rotation_matrix = np.array([
+    #     [1 - 2*q[2]**2 - 2*q[3]**2, 2*q[1]*q[2] - 2*q[0]*q[3], 2*q[1]*q[3] + 2*q[0]*q[2]],
+    #     [2*q[1]*q[2] + 2*q[0]*q[3], 1 - 2*q[1]**2 - 2*q[3]**2, 2*q[2]*q[3] - 2*q[0]*q[1]],
+    #     [2*q[1]*q[3] - 2*q[0]*q[2], 2*q[2]*q[3] + 2*q[0]*q[1], 1 - 2*q[1]**2 - 2*q[2]**2]
+    # ])
+    rotation_matix = np.array([
+        [2*(q[0]**2+q[1]**2)-1, 2*(q[1]*q[2]-q[0]*q[3]), 2*(q[1]*q[3]+q[0]*q[2])],
+        [2*(q[1]*q[2]+q[0]*q[3]), 2*(q[0]**2+q[2]**2)-1, 2*(q[2]*q[3]-q[0]*q[1])],
+        [2*(q[1]*q[3]-q[0]*q[2]), 2*(q[2]*q[3]+q[0]*q[1]), 2*(q[0]**2+q[3]**2)-1]
     ])
-    return rotation_matrix
+    return rotation_matix
 
 # reads the good data and does a frame
 def animate(frame,ax,object_artist,card):
@@ -87,9 +92,9 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     position.append([float(line[15]), float(line[18]), float(line[21])])
 
     # take the conjugate of the quaternion
-    quaternion[0] = [quaternion[0][0], -quaternion[0][1], -quaternion[0][2], -quaternion[0][3]]
-    quaternionPredicted[0] = [quaternionPredicted[0][0], -quaternionPredicted[0][1], -quaternionPredicted[0][2], -quaternionPredicted[0][3]]
-    quaternionObserved[0] = [quaternionObserved[0][0], -quaternionObserved[0][1], -quaternionObserved[0][2], -quaternionObserved[0][3]] 
+    quaternion[0] = [quaternion[0][0], quaternion[0][1], quaternion[0][2], quaternion[0][3]]
+    quaternionPredicted[0] = [quaternionPredicted[0][0], quaternionPredicted[0][1], quaternionPredicted[0][2], quaternionPredicted[0][3]]
+    quaternionObserved[0] = [quaternionObserved[0][0], quaternionObserved[0][1], quaternionObserved[0][2], quaternionObserved[0][3]] 
     ax.clear()  # Clear the previous plot
     # position = position_data[frame]
     position = [0,0,0]
@@ -120,6 +125,7 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     # drawArrow(ax,position,rotation_matrix)
     drawArrow(ax,position,rotation_matrixPredicted)
     drawArrow(ax,position,rotation_matrixObserved,dashed=True)
+    drawArrow(ax,position,rotation_matrix,arrowstyle=True)
 
     xPredicted = transformed_verticesPredicted[:,0]
     yPredicted = transformed_verticesPredicted[:,1]
@@ -255,12 +261,16 @@ def transformInitSpate(rotation_matrix,position):
 def transformArrow(x,y,z,rotation_matrix,position):
     transformed_arrow  = np.matmul(np.array(rotation_matrix), np.array([x,y,z])) + position 
     return transformed_arrow
-def drawArrow(ax,position,rotation_matrix,dashed=False):
+def drawArrow(ax,position,rotation_matrix,dashed=False,arrowstyle=False):
     transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position)
     if dashed:
         ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=20,fc='blue',linestyle='dashed')
         ax.arrow3D(position[0],position[1],position[2],transformed_arrowy[0],transformed_arrowy[1],transformed_arrowy[2],mutation_scale=20,fc='green',linestyle='dashed')
         ax.arrow3D(position[0],position[1],position[2],transformed_arrowz[0],transformed_arrowz[1],transformed_arrowz[2],mutation_scale=20,fc='red',linestyle='dashed')
+    elif arrowstyle:
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=20,fc='blue',arrowstyle='->')
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowy[0],transformed_arrowy[1],transformed_arrowy[2],mutation_scale=20,fc='green',arrowstyle='->')
+        ax.arrow3D(position[0],position[1],position[2],transformed_arrowz[0],transformed_arrowz[1],transformed_arrowz[2],mutation_scale=20,fc='red',arrowstyle='->')
     else:
         ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowx[0],position[1]+transformed_arrowx[1],position[2]+transformed_arrowx[2],mutation_scale=20,fc='blue')
         ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowy[0],position[1]+transformed_arrowy[1],position[2]+transformed_arrowy[2],mutation_scale=20,fc='green')

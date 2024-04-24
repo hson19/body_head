@@ -47,9 +47,8 @@ init(R0) ->
     
     Ppos = mat:eye(9),
     Q= dcm2quat(R0),
-    io:format("calibration matrice at init: ~p~n", [R0]),
     [Q1,Q2,Q3,Q4] = Q,
-    Xor = [[Q1],[-Q2],[-Q3],[-Q4]],
+    Xor = [[Q1],[Q2],[Q3],[Q4]],
     % Xor = [[1],[0],[0],[0]], % quaternion representation of the orientation
     Por = mat:diag([10,10,10,10]),
     State = {T0, BodyXpos, Ppos, Xor, Por, R0},
@@ -69,17 +68,16 @@ measure({T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}) ->
         true ->
             
             {Acc,RotAcc,Gyro, Mag} = process_nav(NavHead, BodyR0),
-            io:format("acceleration read ~p~n",[Acc]),
             Dt = (T1-T0)/1000,
             Qc = observationModel(BodyXor,Acc,Mag,BodyR0),
-            {_, Xor1,Por1,Xorp}=kalmanQuaternion(Acc, Mag, Gyro, Dt,BodyXor,BodyPor,BodyR0,Qc), %Acc,Mag,Gyro,Dt,BodyXor,P0,R0
+            {_, Xor1,Por1,Xorp,UpdatedQc}=kalmanQuaternion(Acc, Mag, Gyro, Dt,BodyXor,BodyPor,BodyR0,Qc), %Acc,Mag,Gyro,Dt,BodyXor,P0,R0
             {BodyXpos0, BodyPpos0} = kalmanPositionPredict(Acc,BodyXor, Dt,BodyXpos,BodyPpos),
             if 
-            ?Debug_info ->Valpos = lists:append([[T1],Xor1,Xorp,Qc,BodyXpos0]);% DEBUG INFO
+            ?Debug_info ->Valpos = lists:append([[T1],Xor1,Xorp,UpdatedQc,BodyXpos0]);% DEBUG INFO
             true -> Valpos = lists:append([[T1],Xor1,BodyXpos0])
             end,
-            io:format("Xor ~p~n", [Xor1]),
-            io:format("BodyXpos0 ~p~n", [BodyXpos0]),
+
+            % io:format("BodyXpos0 ~p~n", [BodyXpos0]),
             {ok,Valpos, {T1, BodyXpos0,BodyPpos0,Xorp,Por1,BodyR0}} %TODO chang Xorp to Xor1
     end.
 
@@ -178,17 +176,11 @@ q2dcm([[Q0], [Q1], [Q2], [Q3]]) ->
 kalmanQuaternion(Acc,Mag,Gyro,Dt,BodyXor,P0,R0,Quat) ->
     [Wx,Wy,Wz] = Gyro,
 
-    % Omega = [
-    %     [0,-Wx,-Wy,-Wz],
-    %     [Wx,0,Wz,-Wy],
-    %     [Wy,-Wz,0,Wx],
-    %     [Wz,Wy,-Wx,0]
-    % ],
     Omega = [
-        [0,Wz,-Wy,Wx],
-        [-Wz,0,Wx,Wy],
-        [Wy,-Wx,0,Wz],
-        [-Wx,-Wy,-Wz,0]
+        [0,-Wx,-Wy,-Wz],
+        [Wx,0,Wz,-Wy],
+        [Wy,-Wz,0,Wx],
+        [Wz,Wy,-Wx,0]
     ],
     F = mat:'+'(mat:eye(4), mat:'*'(0.5*Dt, Omega)),
     Q = mat:diag([?VAR_Q,?VAR_Q,?VAR_Q,?VAR_Q]),
@@ -196,20 +188,25 @@ kalmanQuaternion(Acc,Mag,Gyro,Dt,BodyXor,P0,R0,Quat) ->
     R = mat:diag([?VAR_R,?VAR_R,?VAR_R,?VAR_R]),
 
     {Xorp, Porp} = kalman:kf_predict({BodyXor,P0}, F, Q),
+    io:format("After predic ~p~n",[Xorp]),
+    io:format("Gyro ~p~n",[Gyro]),
+
     {Xor1, Por1} = case qdot(Quat, Xorp) > 0 of
         true ->
+            Qc= Quat,
             kalman:kf_update({Xorp, Porp}, H, R, Quat);
         false ->
-            kalman:kf_update({mat:'*'(-1,Xorp), Porp}, H, R, Quat)
+            Qc= mat:'*'(-1,Quat),
+            kalman:kf_update({mat:'*'(-1,Xorp), Porp}, H, R, Quat)            
         end,
-    % {Xor1,Por1} = {Xorp, Porp}, % gyro only
+        
     io:format("Xor1 ~p~n",[Xor1]),
     io:format("Quat ~p~n",[Quat]),
     UnitXorp = unit(Xorp),
 
     % UnitXor1 = unit(Xor1),
     UnitXor1 = unit(Xor1),
-    {ok, UnitXor1,Por1,UnitXorp}.
+    {ok, UnitXor1,Por1,UnitXorp,Qc}.
 
 kalmanPositionPredict(Acc,Q,Dtpos,Pos,Ppos) ->
     Fpos = [
@@ -269,40 +266,39 @@ observationModel(Qn,Acc,Mag,R0) ->
     io:format("VgHat ~p~n",[VgHat]),
     io:format("Vg ~p~n",[Vg]),
     %error quaternion
-    io:format("Na ~p~n",[Na]),
-    io:format("Domega ~p~n",[Domega]),
     [Qae2,Qae3,Qae4]=consttimesVector(math:sin(Mua*Domega/2),Na),
-    io:format("Qae ~p~n",[[Qae2,Qae3,Qae4]]),
     Qae1= math:cos(Mua*Domega/2),
-    Qa = q_product([[Qae1],[Qae2],[Qae3],[Qae4]],Qn),
+    Qa = unit(q_product([[Qae1],[Qae2],[Qae3],[Qae4]],Qn)),
     io:format("Qa ~p~n",[Qa]),
     io:format("Qn ~p~n",[Qn]),
-    Qa.
+    [[Qa1],[Qa2],[Qa3],[Qa4]]=Qa,
+    Qainv= [[Qa1],[-Qa2],[-Qa3],[-Qa4]],
+    % Qa.
     
 
     % %Step 2:Correct the Estimated Direction of the Magnetic Field Using Magnetometer Readings
-    % [Vmx,Vmy,Vmz]=Mag,
-    % Vmxz= quatTransfomation(Qa,[[0],[Vmx],[Vmy],[Vmz]]),
-    % [_,[Bx],_,[Bz]]= Vmxz,
-    % Vmxz3= [math:sqrt(Bx*Bx+Bz*Bz),0,0],
-    % Vnorth= [1,0,0],
-    % Domegam= math:acos(dot(Vnorth,Vmxz3)),
-    % [Qme2,Qme3,Qme4]=consttimesVector(math:sin(Domegam/2),cross_product(Vmxz3,Vnorth)),
-    % Qme1= math:cos(Domegam/2),
-    % Qme = [[Qme1],[Qme2],[Qme3],[Qme4]],
-    % Qm=q_product(Qme,Qa),
-    % % [Mx,My,Mz]= Mag,
-    % % Norm= math:sqrt(Mx*Mx+My*My+Mz*Mz),
-    % % HCONST=10, %TODO FIND VALUE
-    % % if (Norm - HCONST) > 0.1 -> 
-    % %     q_product(Qa,Qn);
-    % % true -> 
-    % %     q_product(Qm,Qn)
-    % % end.
-    % % THE magnecic field intensity is stable
-    % [[Q1],[Q2],[Q3],[Q4]]=q_product(Qm,Qn),
-    % Norm= math:sqrt(Q1*Q1+Q2*Q2+Q3*Q3+Q4*Q4),
-    % [[Q1/Norm],[Q2/Norm],[Q3/Norm],[Q4/Norm]].
+    [Vmx,Vmy,Vmz]=Mag,
+    Vmxz= quatTransfomation(Qainv,[[0],[Vmx],[Vmy],[Vmz]]),
+    [_,[Bx],_,[Bz]]= Vmxz,
+    Vmxz3= [Bx/math:sqrt(Bx*Bx+Bz*Bz),0,Bz/math:sqrt(Bx*Bx+Bz*Bz)],
+    Vnorth= [1,0,0],
+    Domegam= math:acos(dot(Vnorth,Vmxz3)),
+    [Qme2,Qme3,Qme4]=consttimesVector(math:sin(Domegam/2),cross_product(Vmxz3,Vnorth)),
+    Qme1= math:cos(Domegam/2),
+    Qme = [[Qme1],[Qme2],[Qme3],[Qme4]],
+    Qm=q_product(Qme,Qa),
+    unit(Qm).
+    % [Mx,My,Mz]= Mag,
+    % Norm= math:sqrt(Mx*Mx+My*My+Mz*Mz),
+    % HCONST=10, %TODO FIND VALUE
+    % if (Norm - HCONST) > 0.1 -> 
+    %     q_product(Qa,Qn);
+    % true -> 
+    %     q_product(Qm,Qn)
+    % end.
+    % THE magnecic field intensity is stable
+    % [[W],[X],[Y],[Z]]=q_product(Qm,Qn),
+    % unit([[W],[X],[Y],[Z]]). % return the quaternion
 
 
 
