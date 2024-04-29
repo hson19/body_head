@@ -89,14 +89,14 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     quaternion.append([float(line[3]), float(line[4]), float(line[5]), float(line[6])])
     quaternionPredicted.append([float(line[7]), float(line[8]), float(line[9]), float(line[10])])
     quaternionObserved.append([float(line[11]), float(line[12]), float(line[13]), float(line[14])])
-    position.append([float(line[15]), float(line[18]), float(line[21])])
+    position.extend([float(line[15]), float(line[18]), float(line[21])])
 
     # take the conjugate of the quaternion
     quaternion[0] = [quaternion[0][0], quaternion[0][1], quaternion[0][2], quaternion[0][3]]
     quaternionPredicted[0] = [quaternionPredicted[0][0], quaternionPredicted[0][1], quaternionPredicted[0][2], quaternionPredicted[0][3]]
     quaternionObserved[0] = [quaternionObserved[0][0], quaternionObserved[0][1], quaternionObserved[0][2], quaternionObserved[0][3]] 
     ax.clear()  # Clear the previous plot
-    # position = position_data[frame]
+
     position = [0,0,0]
 
     rotation_matrix=quaternion_to_rotation_matrix(quaternion[0])
@@ -114,13 +114,13 @@ def animate_debug_quaternion(frame,ax,object_artist,card):
     transformed_verticesPredicted = np.array(transformed_verticesPredicted)
     transformed_verticesObserved = np.array(transformed_verticesObserved)
 
-    x = transformed_vertices[:,0] # North
-    y = transformed_vertices[:,1] # UP
-    z = transformed_vertices[:,2] # East
+    # x = transformed_vertices[:,0] # North
+    # y = transformed_vertices[:,1] # UP
+    # z = transformed_vertices[:,2] # East
     
-    transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position)
-    transformed_arrowxPredicted ,transformed_arrowyPredicted,transformed_arrowzPredicted  = transformInitSpate(rotation_matrixPredicted,position)
-    transformed_arrowxObserved ,transformed_arrowyObserved,transformed_arrowzObserved  = transformInitSpate(rotation_matrixObserved,position)
+    # transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position)
+    # transformed_arrowxPredicted ,transformed_arrowyPredicted,transformed_arrowzPredicted  = transformInitSpate(rotation_matrixPredicted,position)
+    # transformed_arrowxObserved ,transformed_arrowyObserved,transformed_arrowzObserved  = transformInitSpate(rotation_matrixObserved,position)
 
     # drawArrow(ax,position,rotation_matrix)
     drawArrow(ax,position,rotation_matrixPredicted)
@@ -278,5 +278,5 @@ def drawArrow(ax,position,rotation_matrix,dashed=False,arrowstyle=False):
 
 ID = 0
 live = True
-LiveAnimeation(DEBUG=True,card='head')
+LiveAnimeation(DEBUG=True,card='left_arm')
 # getAverageTime()

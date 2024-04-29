@@ -83,10 +83,13 @@ node_type() ->
     io:format("Host: ~p~n", [Host]),
     IsBody = lists:prefix("body", Host),
     Ishead = lists:prefix("head", Host),
+    Isleftarm = lists:prefix("left_arm", Host),
     io:format("IsBody: ~p~n", [IsBody]),
     io:format("Ishead: ~p~n", [Ishead]),
+    io:format("Isleftarm: ~p~n", [Isleftarm]),
     if
         IsBody -> bodypart;
         Ishead -> bodypart;
+        Isleftarm -> bodypart;
         true -> undefined
     end.

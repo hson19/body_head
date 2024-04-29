@@ -47,7 +47,7 @@ measure(C=#cal{gyro={GBx,GBy,GBz}, mag={MBx,MBy,MBz}}) ->
     Data = lists:append([
         scale(Acc, 9.81),
         scale(Gyro, math:pi()/180),
-        [-(Mx-MBx),My-MBy,-(Mz-MBz)]
+        [(Mx-MBx),My-MBy,(Mz-MBz)]
     ]),
     {ok, Data, C}.
 
