@@ -10,7 +10,10 @@
     {sync_nodes_mandatory, []},
 
     {sync_nodes_optional, [
-        body_head@head
+        body_head@body,
+        body_head@head,
+        body_head@left_arm,
+        body_head@right_arm
     ]},
 
     {sync_nodes_timeout, 5000},
@@ -25,11 +28,6 @@
     ]} ,
     {devices , [
         %{spi2 , pmod_nav}
-    ]},
-    {emulation, {grisp2, grisp_emulation}},
-        {devices, [
-            {spi1, pmod_gyro},
-            {spi2, pmod_nav}
-        ]}
+    ]}
 ]}
 ].
