@@ -22,7 +22,7 @@ calibrate({MBx,MBy,MBz}) ->
     _ = io:get_line("Place the pmod_nav at 0° then press enter"),
     [Ax,Ay,Az] = calibrate(acc, [out_x_xl, out_y_xl, out_z_xl], 100),
     [Mx,My,Mz] = calibrate(mag, [out_x_m, out_y_m, out_z_m], 10),
-    R0 = ahrs([Ax,Ay,Az], [-(Mx-MBx),My-MBy,-(Mz-MBz)]), 
+    R0 = ahrs([Ax,Ay,Az], [(Mx-MBx),My-MBy,(Mz-MBz)]), % why minus? ?? TODO
     io:format("Calibration matrice at calibration e2: ~p~n", [mat:tr(R0)]),
     mat:tr(R0).
 
@@ -37,59 +37,110 @@ init(R0) ->
         timeout => 10
     },
     T0 = hera:timestamp(),
-    BodyXpos = [
+    BodyPos = [
         [0],[0],[0], % Position Body
         [0],[0],[0], % V BOdy
         [0],[0],[0]], % Acc Body
-    HeadXpos=[[0],[0],[0.30], % Position Head
+    BodyPpos = mat:eye(9),
+    BodyOr= dcm2quat(R0),
+
+    BodyPor = mat:diag([10,10,10,10]),
+    BodyXpos = {T0,BodyPos, BodyPpos, BodyOr, BodyPor, R0},
+
+    HeadPos=[[0],[0],[0.30], % Position Head
         [0],[0],[0], % V Head
         [0],[0],[0]], % Acc Head
-    
-    Ppos = mat:eye(9),
-    Q= dcm2quat(R0),
-    [Q1,Q2,Q3,Q4] = Q,
-    Xor = [[Q1],[Q2],[Q3],[Q4]],
-    % Xor = [[1],[0],[0],[0]], % quaternion representation of the orientation
-    Por = mat:diag([10,10,10,10]),
-    State = {T0, BodyXpos, Ppos, Xor, Por, R0},
+    HeadPpos = mat:eye(9),
+    HeadOr= dcm2quat(R0),
+    io:format("HeadOr ~p~n",[HeadOr]),
+    HeadPor = mat:diag([10,10,10,10]),
+    HeadXpos = {T0,HeadPos, HeadPpos, HeadOr, HeadPor, R0},
+
+    LeftArmPos=[[0.15],[0.15],[0.15], % Position LeftArm
+        [0],[0],[0], % V LeftArm
+        [0],[0],[0]], % Acc LeftArm
+    LeftArmPpos = mat:eye(9),
+    LeftArmOr= dcm2quat(R0),
+    LeftArmPor = mat:diag([10,10,10,10]),
+    LeftArmXpos = {T0,LeftArmPos, LeftArmPpos, LeftArmOr, LeftArmPor, R0},
+
+    RightArmPos=[[-0.15],[0.15],[0.15], % Position RightArm
+        [0],[0],[0], % V RightArm
+        [0],[0],[0]], % Acc RightArm
+    RightArmPpos = mat:eye(9),
+    RightArmOr= dcm2quat(R0),
+    RightArmPor = mat:diag([10,10,10,10]),
+    RightArmXpos = {T0,RightArmPos, RightArmPpos, RightArmOr, RightArmPor, R0},
+
+    State = {HeadXpos,BodyXpos,LeftArmXpos,RightArmXpos},
+
     {ok, State, Spec}.
 
 
-measure({T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}) ->
+measure({HeadXpos,BodyXpos,LeftArmXpos,RightArmXpos}) ->
+    {T0Head,HeadPos,HeadPpos,HeadOr,HeadPor,HeadR0}=HeadXpos, 
+    {T0Body,BodyPos,BodyPpos,BodyOr,BodyPor,BodyR0}=BodyXpos,
+    {T0LeftArm,LeftArmPos,LeftArmPpos,LeftArmOr,LeftArmPor,LeftArmR0}=LeftArmXpos,
+    {T0RightArm,RightArmPos,RightArmPpos,RightArmOr,RightArmPor,RightArmR0}=RightArmXpos,
+
     DataBody = hera_data:get(nav3, body_head@body),
     DataHead = hera_data:get(nav3, body_head@head),
     DataLeftArm = hera_data:get(nav3, body_head@left_arm),
+    DataRightArm = hera_data:get(nav3, body_head@right_arm),
+
     T1 = hera:timestamp(),
-    Dt = (T1-T0)/1000,
-    % NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
-    NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],
-    NavLeftArm = [Data || {_,_,Ts,Data} <- DataLeftArm, T0 < Ts, T1-Ts < 500],
-    %io:format("found body_head@head ~p~n", [NavHead] ),
+    NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0Body < Ts, T1-Ts < 500],
+    NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0Head < Ts, T1-Ts < 500],
+    NavLeftArm = [Data || {_,_,Ts,Data} <- DataLeftArm, T0LeftArm < Ts, T1-Ts < 500],
+    NavRightArm = [Data || {_,_,Ts,Data} <- DataRightArm, T0RightArm < Ts, T1-Ts < 500],
     if
         length(NavHead) == 0 -> % no measure
-            {undefined, {T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}};
-        true ->
-            
-            {Acc,RotAcc,Gyro, Mag} = process_nav(NavHead, BodyR0),
-            
-            Qc = observationModel(BodyXor,Acc,Mag,BodyR0),
-            {_, Xor1,Por1,Xorp,UpdatedQc}=kalmanQuaternion(Acc, Mag, Gyro, Dt,BodyXor,BodyPor,BodyR0,Qc), %Acc,Mag,Gyro,Dt,BodyXor,P0,R0
-            {BodyXpos0, BodyPpos0} = kalmanPositionPredict(Acc,BodyXor, Dt,BodyXpos,BodyPpos),
+            UpdatedHeadXpos=HeadXpos,
             if 
-            ?Debug_info ->Valpos = lists:append([[T1],Xor1,Xorp,UpdatedQc,BodyXpos0]);% DEBUG INFO
-            true -> Valpos = lists:append([[T1],Xor1,BodyXpos0])
-            end,
-
-            % io:format("BodyXpos0 ~p~n", [BodyXpos0]),
-            {ok,Valpos, {T1, BodyXpos0,BodyPpos0,Xorp,Por1,BodyR0}} %TODO chang Xorp to Xor1
+                ?Debug_info ->HeadValpos = lists:append([HeadOr,HeadOr,HeadOr,HeadPos]);% DEBUG INFO
+                true -> HeadValpos = lists:append([HeadOr,HeadPos])
+            end;
+        true ->
+            {ok,HeadValpos,UpdatedHeadXpos}=sensorUpdate(NavHead,T1, HeadPos, HeadPpos, HeadOr, HeadPor, HeadR0,(T1-T0Head)/1000)
+    end,
+    if
+        length(NavBody) == 0 -> % no measure
+            UpdatedBodyXpos=BodyXpos,
+            if 
+                ?Debug_info ->BodyValpos = lists:append([BodyOr,BodyOr,BodyOr,BodyPos]);% DEBUG INFO
+                true -> BodyValpos = lists:append([BodyOr,BodyPos])
+            end;
+    
+        true ->
+            io:format("Datat from NavBody"),
+            {ok,BodyValpos,UpdatedBodyXpos}=sensorUpdate(NavBody,T1, BodyPos, BodyPpos, BodyOr, BodyPor, BodyR0,(T1-T0Body)/1000)
     end,
     if
         length(NavLeftArm) == 0 -> % no measure
-            {undefined, {T0, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0}};
+            UpdatedLeftArmXpos=LeftArmXpos,
+            if 
+                ?Debug_info ->LeftArmValpos = lists:append([LeftArmOr,LeftArmOr,LeftArmOr,LeftArmPos]);% DEBUG INFO
+                true -> LeftArmValpos = lists:append([LeftArmOr,LeftArmPos])
+            end;
         true ->
-            sensorUpdate(NavLeftArm,T1, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0,Dt)
+            {ok,LeftArmValpos,UpdatedLeftArmXpos}=sensorUpdate(NavLeftArm,T1, LeftArmPos, LeftArmPpos, LeftArmOr, LeftArmPor, LeftArmR0,(T1-T0LeftArm)/1000)
+    end,
+    if 
+        length(NavRightArm) == 0 -> % no measure
+            UpdatedRightArmXpos=RightArmXpos,
+            if 
+                ?Debug_info ->RightArmValpos = lists:append([RightArmOr,RightArmOr,RightArmOr,RightArmPos]);% DEBUG INFO
+                true -> RightArmValpos = lists:append([RightArmOr,RightArmPos])
+            end;
+        true ->
+            {ok,RightArmValpos,UpdatedRightArmXpos}=sensorUpdate(NavRightArm,T1, RightArmPos, RightArmPpos, RightArmOr, RightArmPor, RightArmR0,(T1-T0RightArm)/1000)
+    end,
+    Valpos = lists:append([[T1],HeadValpos,BodyValpos,LeftArmValpos,RightArmValpos]),
+    if length(NavBody)== 0 ->
+        {undefined,{UpdatedHeadXpos,UpdatedBodyXpos,UpdatedLeftArmXpos,UpdatedRightArmXpos}};
+        true-> {ok, Valpos, {UpdatedHeadXpos,UpdatedBodyXpos,UpdatedLeftArmXpos,UpdatedRightArmXpos}}
     end.
-
+    
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -162,8 +213,9 @@ dcm2quat(R) ->
         R13-R31,
         R21-R12
     ],
-    scale(V, (0.25/Q1)).
-
+    NewV=scale(V, (0.25/Q1)),
+    [W,X,Y,Z]=NewV,
+    [[W],[X],[Y],[Z]]. % return the quaternion
 
 q2dcm([[Q0], [Q1], [Q2], [Q3]]) -> 
     R00 = 2 * (Q0 * Q0 + Q1 * Q1) - 1,
@@ -241,12 +293,7 @@ kalmanPositionPredict(Acc,Q,Dtpos,Pos,Ppos) ->
     [[_],[AccNorth],[AccUp],[AccEast]] = AccTrans,
     % io:format("transformed acc ~p~n",[AccTrans]),
     NewPos= [[X],[Vx],[AccNorth],[Y],[Vy],[AccUp-9.81],[Z],[Vz],[AccEast]],
-    io:format("Read Acc ~p~n", [[A2,A3,A4]]),
-    io:format("Acc before rotation norm ~p~n", [math:sqrt(A2*A2+A3*A3+A4*A4)]),
-    io:format("quaternion ~p~n", [Q]),
-    io:format("Norm of quaternion ~p~n", [math:sqrt(qdot(Q,Q))]),
-    io:format("Acc after rotation norm: ~p~n", [math:sqrt(AccNorth*AccNorth+AccUp*AccUp+AccEast*AccEast)]),
-    io:format("Acceleration ~p~n", [[AccNorth,AccUp-9.81,AccEast]]),
+
     {Xpos0, Ppos0} = kalman:kf_predict({NewPos,Ppos}, Fpos, Qpos),
     {Xpos0, Ppos0}.
 
@@ -281,8 +328,7 @@ observationModel(Qn,Acc,Mag,R0) ->
 
     Na= unit(cross_product([VgHatX,VgHatY,VgHatZ],Vg)),
     Domega= math:acos(dot([VgHatX,VgHatY,VgHatZ],Vg)),
-    io:format("VgHat ~p~n",[VgHat]),
-    io:format("Vg ~p~n",[Vg]),
+
     %error quaternion
     [Qae2,Qae3,Qae4]=consttimesVector(math:sin(Mua*Domega/2),Na),
     Qae1= math:cos(Mua*Domega/2),
@@ -328,15 +374,21 @@ sensorUpdate(Data,T1, BodyXpos, BodyPpos, BodyXor, BodyPor, BodyR0,Dt) ->
     {Acc,RotAcc,Gyro, Mag} = process_nav(Data, BodyR0),
     
     Qc = observationModel(BodyXor,Acc,Mag,BodyR0),
+    io:format("Qc ~p~n",[Qc]),
+    io:format("Gyro ~p~n",[Gyro]),
     {_, Xor1,Por1,Xorp,UpdatedQc}=kalmanQuaternion(Acc, Mag, Gyro, Dt,BodyXor,BodyPor,BodyR0,Qc), %Acc,Mag,Gyro,Dt,BodyXor,P0,R0
+    io:format("UpdatedQc ~p~n",[UpdatedQc]),
+    io:format("Xor1 ~p~n",[Xor1]),
+    io:format("Xorp ~p~n",[Xorp]),
+    
     {BodyXpos0, BodyPpos0} = kalmanPositionPredict(Acc,BodyXor, Dt,BodyXpos,BodyPpos),
     if 
-    ?Debug_info ->Valpos = lists:append([[T1],Xor1,Xorp,UpdatedQc,BodyXpos0]);% DEBUG INFO
-    true -> Valpos = lists:append([[T1],Xor1,BodyXpos0])
+    ?Debug_info ->Valpos = lists:append([Xor1,Xorp,UpdatedQc,BodyXpos0]);% DEBUG INFO
+    true -> Valpos = lists:append([Xor1,BodyXpos0])
     end,
 
     % io:format("BodyXpos0 ~p~n", [BodyXpos0]),
-    {ok,Valpos, {T1, BodyXpos0,BodyPpos0,Xorp,Por1,BodyR0}}. %TODO chang Xorp to Xor1
+    {ok,Valpos, {T1,BodyXpos0,BodyPpos0,Xorp,Por1,BodyR0}}. %TODO chang Xorp to Xor1
 
 conjugateQuaternion([[Q0],[Q1],[Q2],[Q3]]) ->
     [[Q0],[-Q1],[-Q2],[-Q3]].
