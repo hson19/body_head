@@ -70,7 +70,7 @@ def animate(frame,ax,object_artist,card):
 
     return object_artist,
 
-def animate_debug_quaternion(frame,ax,object_artist,card,Body=True,Head=True,LeftArm=True,RightArm=True):
+def animate_debug_quaternion(frame,ax,object_artist,card,Body=True,Head=True,Arm=True,Forearm=True):
     time = []
 
     global ID
@@ -78,12 +78,12 @@ def animate_debug_quaternion(frame,ax,object_artist,card,Body=True,Head=True,Lef
     col_names=['it','time0','time1']
     Head_names=['Hq0','Hq1','Hq2','Hq3','HQp0','HQp1','HQp2','HQp3','HQo0','HQo1','HQo2','HQo3','Hpx','HVx','Hax','Hpy','Hvy','Hay','Hpz','Hvz','Haz']
     Body_names=['Bq0','Bq1','Bq2','Bq3','BQp0','BQp1','BQp2','BQp3','BQo0','BQo1','BQo2','BQo3','Bpx','BVx','Bax','Bpy','Bvy','Bay','Bpz','Bvz','Baz']
-    LeftArm_names=['Lq0','Lq1','Lq2','Lq3','LQp0','LQp1','LQp2','LQp3','LQo0','LQo1','LQo2','LQo3','Lpx','LVx','Lax','Lpy','Lvy','Lay','Lpz','Lvz','Laz']
-    RightArm_names=['Rq0','Rq1','Rq2','Rq3','RQp0','RQp1','RQp2','RQp3','RQo0','RQo1','RQo2','RQo3','Rpx','RVx','Rax','Rp1','Rvy','Ray','Rp2','Rvz','Raz']
+    Arm_names=['Aq0','Aq1','Aq2','Aq3','AQp0','AQp1','AQp2','AQp3','AQo0','AQo1','AQo2','AQo3','Apx','AVx','Aax','Apy','Avy','Aay','Apz','Avz','Aaz']
+    ForeArm_names=['Fq0','Fq1','Fq2','Fq3','FQp0','FQp1','FQp2','FQp3','FQo0','FQo1','FQo2','FQo3','Fpx','FVx','Fax','Fp1','Fvy','Fay','Fp2','Fvz','Faz']
     col_names.extend(Head_names)
     col_names.extend(Body_names)
-    col_names.extend(LeftArm_names)
-    col_names.extend(RightArm_names)
+    col_names.extend(Arm_names)
+    col_names.extend(ForeArm_names)
     NToID={name:ID for ID,name in enumerate(col_names)}
     data = pd.read_csv("measures/e2_body_head@"+card+".csv",names=col_names,header=None)
     print("len Colnames",len(col_names))
@@ -102,6 +102,8 @@ def animate_debug_quaternion(frame,ax,object_artist,card,Body=True,Head=True,Lef
         print(idx,element)
     time.append(float(line[2]))
     ax.clear() 
+    Headposition = []
+    Headposition.extend([float(line[NToID['Hpx']]),float(line[NToID['Hpy']]),float(line[NToID['Hpz']])])
     if Body:
         print("body is printed")
         quaternion = []
@@ -112,45 +114,44 @@ def animate_debug_quaternion(frame,ax,object_artist,card,Body=True,Head=True,Lef
         quaternionPredicted.append([float(line[NToID['BQp0']]), float(line[NToID['BQp1']]), float(line[NToID['BQp2']]), float(line[NToID['BQp3']])])
         quaternionObserved.append([float(line[NToID['BQo0']]), float(line[NToID['BQo1']]), float(line[NToID['BQo2']]), float(line[NToID['BQo3']])])
         position.extend([float(line[NToID['Bpx']]), float(line[NToID['Bpy']]), float(line[NToID['Bpz']])])
-        position = [0,0,0]
-        print(quaternionObserved)
+        position = [position[0]-Headposition[0],position[1]-Headposition[1],position[2]-Headposition[2]]
         RotateAndPrint(ax,quaternion,quaternionPredicted,quaternionObserved,position)
     if Head:
         Headquaternion = []
         HeadquaternionPredicted = []
         HeadquaternionObserved = []
-        Headposition = []
         Headquaternion.append([float(line[NToID['Hq0']]),float(line[NToID['Hq1']]),float(line[NToID['Hq2']]),float(line[NToID['Hq3']])])
         HeadquaternionPredicted.append([float(line[NToID['HQp0']]),float(line[NToID['HQp1']]),float(line[NToID['HQp2']]),float(line[NToID['HQp3']])])
         HeadquaternionObserved.append([float(line[NToID['HQo0']]),float(line[NToID['HQo1']]),float(line[NToID['HQo2']]),float(line[NToID['HQo3']])])
-        Headposition.extend([float(line[NToID['Hpx']]),float(line[NToID['Hpy']]),float(line[NToID['Hpz']])])
-        position = [0,0,0]
-        RotateAndPrint(ax,Headquaternion,HeadquaternionPredicted,HeadquaternionObserved,Headposition)
-    if LeftArm:
-        LeftArmquaternion = []
-        LeftArmquaternionPredicted = []
-        LeftArmquaternionObserved = []
-        LeftArmposition = []
-        LeftArmquaternion.append([float(line[NToID['Lq0']]),float(line[NToID['Lq1']]),float(line[NToID['Lq2']]),float(line[NToID['Lq3']])])
-        LeftArmquaternionPredicted.append([float(line[NToID['LQp0']]),float(line[NToID['LQp1']]),float(line[NToID['LQp2']]),float(line[NToID['LQp3']])])
-        LeftArmquaternionObserved.append([float(line[NToID['LQo0']]),float(line[NToID['LQo1']]),float(line[NToID['LQo2']]),float(line[NToID['LQo3']])])
-        LeftArmposition.extend([float(line[NToID['Lpx']]),float(line[NToID['Lpy']]),float(line[NToID['Lpz']])])
-        print("LeftArmQuaternion",LeftArmquaternion)
         if AttitudeOnly:
-            LeftArmposition = [0,0,0]
-        RotateAndPrint(ax,LeftArmquaternion,LeftArmquaternionPredicted,LeftArmquaternionObserved,LeftArmposition)
+            RotateAndPrint(ax,Headquaternion,HeadquaternionPredicted,HeadquaternionObserved,[0,0,0])
+        RotateAndPrint(ax,Headquaternion,HeadquaternionPredicted,HeadquaternionObserved,Headposition)
+    if Arm:
+        Armquaternion = []
+        ArmquaternionPredicted = []
+        ArmquaternionObserved = []
+        Armposition = []
+        Armquaternion.append([float(line[NToID['Aq0']]),float(line[NToID['Aq1']]),float(line[NToID['Aq2']]),float(line[NToID['Aq3']])])
+        ArmquaternionPredicted.append([float(line[NToID['AQp0']]),float(line[NToID['AQp1']]),float(line[NToID['AQp2']]),float(line[NToID['AQp3']])])
+        ArmquaternionObserved.append([float(line[NToID['AQo0']]),float(line[NToID['AQo1']]),float(line[NToID['AQo2']]),float(line[NToID['AQo3']])])
+        Armposition.extend([float(line[NToID['Apx']]),float(line[NToID['Apy']]),float(line[NToID['Apz']])])
+        print("ArmQuaternion",Armquaternion)
+        if AttitudeOnly:
+            Armposition = [Armposition[0]-Headposition[0],Armposition[1]-Headposition[1],Armposition[2]-Headposition[2]]
+        RotateAndPrint(ax,Armquaternion,ArmquaternionPredicted,ArmquaternionObserved,Armposition)
 
-    if RightArm:
-        RightArmquaternion = []
-        RightArmquaternionPredicted = []
-        RightArmquaternionObserved = []
-        RightArmposition = []
-        RightArmquaternion.append([float(line[60]),float(line[61]),float(line[62]),float(line[63])])
-        RightArmquaternionPredicted.append([float(line[64]),float(line[65]),float(line[66]),float(line[67])])
-        RightArmquaternionObserved.append([float(line[68]),float(line[69]),float(line[70]),float(line[71])])
-        RightArmposition.extend([float(line[72]),float(line[75]),float(line[78])])
-        position = [0,0,0]
-        RotateAndPrint(ax,RightArmquaternion,RightArmquaternionPredicted,RightArmquaternionObserved,RightArmposition)
+    if Forearm:
+        Forearmquaternion = []
+        ForearmquaternionPredicted = []
+        ForearmquaternionObserved = []
+        Forearmposition = []
+        Forearmquaternion.append([float(line[NToID['Fq0']]),float(line[NToID['Fq1']]),float(line[NToID['Fq2']]),float(line[NToID['Fq3']])])
+        ForearmquaternionPredicted.append([float(line[NToID['FQp0']]),float(line[NToID['FQp1']]),float(line[NToID['FQp2']]),float(line[NToID['FQp3']])])
+        ForearmquaternionObserved.append([float(line[NToID['FQo0']]),float(line[NToID['FQo1']]),float(line[NToID['FQo2']]),float(line[NToID['FQo3']])])
+        Forearmposition.extend([float(line[NToID['Fpx']]),float(line[NToID['Fpy']]),float(line[NToID['Fpz']])])
+        if AttitudeOnly:
+            Forearmposition = [Forearmposition[0]-Headposition[0],Forearmposition[1]-Headposition[1],Forearmposition[2]-Headposition[2]]
+        RotateAndPrint(ax,Forearmquaternion,ForearmquaternionPredicted,ForearmquaternionObserved,Forearmposition)
 
     ax.set_xlim(-20 , 30)
     ax.set_ylim(-20 , 30)
@@ -187,7 +188,7 @@ def RotateAndPrint(ax,quaternion,quaternionPredicted,quaternionObserved,position
     drawArrow(ax,position,rotation_matrixPredicted)
     drawArrow(ax,position,rotation_matrixObserved,dashed=True)
     drawArrow(ax,position,rotation_matrix,arrowstyle=True)
-def LiveAnimeation(DEBUG=False,card='body',Body=True,Head=True,LeftArm=True,RightArm=True):
+def LiveAnimeation(DEBUG=False,card='body',Body=True,Head=True,Arm=True,Forearm=True):
     plt.rcParams["figure.figsize"] = [7.50, 3.50]
     plt.rcParams["figure.autolayout"] = True
     fig = plt.figure()
@@ -232,7 +233,7 @@ def LiveAnimeation(DEBUG=False,card='body',Body=True,Head=True,LeftArm=True,Righ
     ax.set_zlim(-2, 3)
     # Animate the plot
     if DEBUG:
-        ani = FuncAnimation(fig, animate_debug_quaternion, fargs=(ax,object_artist,card,Body,Head,LeftArm,RightArm), interval=10, blit=True,cache_frame_data=False)
+        ani = FuncAnimation(fig, animate_debug_quaternion, fargs=(ax,object_artist,card,Body,Head,Arm,Forearm), interval=10, blit=True,cache_frame_data=False)
     else:
   
         ani = FuncAnimation(fig, animate, fargs=(ax,object_artist,card), interval=10, blit=True,cache_frame_data=False)
@@ -309,5 +310,5 @@ def drawArrow(ax,position,rotation_matrix,dashed=False,arrowstyle=False):
 ID = 0
 live = True
 AttitudeOnly = True
-LiveAnimeation(DEBUG=True,card='body',Body=True,Head=False,LeftArm=False,RightArm=False)
+LiveAnimeation(DEBUG=True,card='body',Body=True,Head=True,Arm=False,Forearm=False)
 # getAverageTime()
