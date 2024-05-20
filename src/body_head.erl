@@ -17,7 +17,7 @@ set_args(nav3) ->
     update_table({{e2, node()}, R0}).
 
 launch() ->
-    try launch(nil) of
+    try launch(node_type()) of
         ok ->
             [grisp_led:color(L, green) || L <- [1, 2]],
             ok
@@ -60,11 +60,13 @@ stop(_State) ->
 
 
 %--- Internal functions ---------------------------------------------------------
-launch(_) ->
+launch(bodypart) ->
     Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
     R0 = ets:lookup_element(args, {e2, node()}, 2),
     {ok,_} = hera:start_measure(nav3,Cn),
     {ok,_} = hera:start_measure(e2,R0),
+    ok;
+launch(_) ->
     ok.
 
 init_table() ->
@@ -83,13 +85,16 @@ node_type() ->
     io:format("Host: ~p~n", [Host]),
     IsBody = lists:prefix("body", Host),
     Ishead = lists:prefix("head", Host),
-    Isleftarm = lists:prefix("left_arm", Host),
+    Isarm = lists:prefix("arm", Host),
+    Isforearm = lists:prefix("forearm", Host),
     io:format("IsBody: ~p~n", [IsBody]),
     io:format("Ishead: ~p~n", [Ishead]),
-    io:format("Isleftarm: ~p~n", [Isleftarm]),
+    io:format("Isarm: ~p~n", [Isarm]),
+    io:format("Isforearm: ~p~n", [Isforearm]),
     if
         IsBody -> bodypart;
         Ishead -> bodypart;
-        Isleftarm -> bodypart;
+        Isarm -> bodypart;
+        Isforearm -> bodypart;
         true -> undefined
     end.

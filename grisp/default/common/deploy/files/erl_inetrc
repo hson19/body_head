@@ -2,9 +2,10 @@
 
 % Add hosts
 {host, {192,168,129,139}, ["hadrien-Latitude-E7470"]}.
-{host, {192,168,129,207}, ["body"]}.
-{host, {192,168,129,221}, ["head"]}.
-
+{host, {192,168,129,221}, ["body"]}.
+{host, {192,168,129,206}, ["head"]}.
+{host, {192,168,129,207}, ["arm"]}.
+{host, {192,168,129,239}, ["forearm"]}.
 % Add hosts phone
 % {host, {192.168.13.187}, ["hadrien-Latitude-E7470"]}.
 % {host, {192,168,129,207}, ["nav1"]}.

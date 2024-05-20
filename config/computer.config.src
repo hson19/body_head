@@ -12,8 +12,8 @@
     {sync_nodes_optional, [
         body_head@body,
         body_head@head,
-        body_head@left_arm,
-        body_head@right_arm
+        body_head@arm,
+        body_head@forearm
     ]},
 
     {sync_nodes_timeout, 5000},
