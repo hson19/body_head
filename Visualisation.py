@@ -1,3 +1,5 @@
+import time
+from time import sleep
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -5,25 +7,14 @@ from scipy.spatial.transform import Rotation as R
 from matplotlib.animation import FuncAnimation
 from scipy.spatial import Delaunay
 import pandas as pd
+
 from matplotlib.patches import FancyArrowPatch
 from mpl_toolkits.mplot3d.proj3d import proj_transform
 from mpl_toolkits.mplot3d.axes3d import Axes3D
 
-
-def quaternion_to_rotation_matrix(quaternion):
-    q = np.array(quaternion)
-    q /= np.linalg.norm(q)
-    # rotation_matrix = np.array([
-    #     [1 - 2*q[2]**2 - 2*q[3]**2, 2*q[1]*q[2] - 2*q[0]*q[3], 2*q[1]*q[3] + 2*q[0]*q[2]],
-    #     [2*q[1]*q[2] + 2*q[0]*q[3], 1 - 2*q[1]**2 - 2*q[3]**2, 2*q[2]*q[3] - 2*q[0]*q[1]],
-    #     [2*q[1]*q[3] - 2*q[0]*q[2], 2*q[2]*q[3] + 2*q[0]*q[1], 1 - 2*q[1]**2 - 2*q[2]**2]
-    # ])
-    rotation_matix = np.array([
-        [2*(q[0]**2+q[1]**2)-1, 2*(q[1]*q[2]-q[0]*q[3]), 2*(q[1]*q[3]+q[0]*q[2])],
-        [2*(q[1]*q[2]+q[0]*q[3]), 2*(q[0]**2+q[2]**2)-1, 2*(q[2]*q[3]-q[0]*q[1])],
-        [2*(q[1]*q[3]-q[0]*q[2]), 2*(q[2]*q[3]+q[0]*q[1]), 2*(q[0]**2+q[3]**2)-1]
-    ])
-    return rotation_matix
+ID = 0
+live = False
+ATTITUDEONLY = True
 
 # reads the good data and does a frame
 def animate(frame,ax,card):
@@ -61,24 +52,14 @@ def animate(frame,ax,card):
 
     return 
 
-def animate_debug_quaternion(frame,ax,card,Body=True,Head=True,Arm=True,Forearm=True):
+def animate_debug_quaternion(frame,ax,card,ntoid,body=True,head=True,arm=True,forearm=True):
     time = []
 
     global ID
     global live
-    col_names=['it','time0','time1']
-    Head_names=['Hq0','Hq1','Hq2','Hq3','HQp0','HQp1','HQp2','HQp3','HQo0','HQo1','HQo2','HQo3','Hpx','HVx','Hax','Hpy','Hvy','Hay','Hpz','Hvz','Haz']
-    Body_names=['Bq0','Bq1','Bq2','Bq3','BQp0','BQp1','BQp2','BQp3','BQo0','BQo1','BQo2','BQo3','Bpx','BVx','Bax','Bpy','Bvy','Bay','Bpz','Bvz','Baz']
-    Arm_names=['Aq0','Aq1','Aq2','Aq3','AQp0','AQp1','AQp2','AQp3','AQo0','AQo1','AQo2','AQo3','Apx','AVx','Aax','Apy','Avy','Aay','Apz','Avz','Aaz']
-    ForeArm_names=['Fq0','Fq1','Fq2','Fq3','FQp0','FQp1','FQp2','FQp3','FQo0','FQo1','FQo2','FQo3','Fpx','FVx','Fax','Fpy','Fvy','Fay','Fpz','Fvz','Faz']
-    DATA=["ax","ay","az","mx","my","mz"]
-    col_names.extend(Head_names)
-    col_names.extend(Body_names)
-    col_names.extend(Arm_names)
-    col_names.extend(ForeArm_names)
-    col_names.extend(DATA)
-    NToID={name:ID for ID,name in enumerate(col_names)}
-    data = pd.read_csv("measures/e2_body_head@"+card+".csv",header=None)
+
+    
+    data = pd.read_csv(card,header=None)
     
     if live:
         data=data.iloc[-1]
@@ -86,70 +67,98 @@ def animate_debug_quaternion(frame,ax,card,Body=True,Head=True,Arm=True,Forearm=
         data=data.iloc[ID]
         ID+=1  
     line=[float(element.replace('[','').replace(']','').strip('\n')) if isinstance(element, str) else element for element in data]
+    state_dict={name:line[ntoid[name]] for name in ntoid.keys()}
     time.append(float(line[2]))
     ax.clear() 
-    Headposition = []
-    Headposition.extend([float(line[NToID['Hpx']]),float(line[NToID['Hpy']]),float(line[NToID['Hpz']])])
-    if Body:
-        quaternion,quaternionPredicted,quaternionObserved,position = [],[],[],[]
-        quaternion.append([float(line[NToID['Bq0']]), float(line[NToID['Bq1']]), float(line[NToID['Bq2']]), float(line[NToID['Bq3']])])
-        quaternionPredicted.append([float(line[NToID['BQp0']]), float(line[NToID['BQp1']]), float(line[NToID['BQp2']]), float(line[NToID['BQp3']])])
-        quaternionObserved.append([float(line[NToID['BQo0']]), float(line[NToID['BQo1']]), float(line[NToID['BQo2']]), float(line[NToID['BQo3']])])
-        position.extend([float(line[NToID['Bpx']]), float(line[NToID['Bpy']]), float(line[NToID['Bpz']])])
-        position = [position[0]-Headposition[0],position[1]-Headposition[1],position[2]-Headposition[2]]
-        RotateAndPrint(ax,quaternion,quaternionPredicted,quaternionObserved,position,color='blue')
-    if Head:
-        Headquaternion,HeadquaternionPredicted,HeadquaternionObserved = [],[],[]
-        Headquaternion.append([float(line[NToID['Hq0']]),float(line[NToID['Hq1']]),float(line[NToID['Hq2']]),float(line[NToID['Hq3']])])
-        HeadquaternionPredicted.append([float(line[NToID['HQp0']]),float(line[NToID['HQp1']]),float(line[NToID['HQp2']]),float(line[NToID['HQp3']])])
-        HeadquaternionObserved.append([float(line[NToID['HQo0']]),float(line[NToID['HQo1']]),float(line[NToID['HQo2']]),float(line[NToID['HQo3']])])
-        if AttitudeOnly:
-            RotateAndPrint(ax,Headquaternion,HeadquaternionPredicted,HeadquaternionObserved,[0,0,0],color='black')
-        else:
-            RotateAndPrint(ax,Headquaternion,HeadquaternionPredicted,HeadquaternionObserved,Headposition)#color='black')
-    if Arm:
-        Armquaternion,ArmquaternionPredicted,ArmquaternionObserved,Armposition = [],[],[],[]
-        Armquaternion.append([float(line[NToID['Aq0']]),float(line[NToID['Aq1']]),float(line[NToID['Aq2']]),float(line[NToID['Aq3']])])
-        ArmquaternionPredicted.append([float(line[NToID['AQp0']]),float(line[NToID['AQp1']]),float(line[NToID['AQp2']]),float(line[NToID['AQp3']])])
-        ArmquaternionObserved.append([float(line[NToID['AQo0']]),float(line[NToID['AQo1']]),float(line[NToID['AQo2']]),float(line[NToID['AQo3']])])
-        Armposition.extend([float(line[NToID['Apx']]),float(line[NToID['Apy']]),float(line[NToID['Apz']])])
-        if AttitudeOnly:
-            Armposition = [Armposition[0]-Headposition[0],Armposition[1]-Headposition[1],Armposition[2]-Headposition[2]]
-        RotateAndPrint(ax,Armquaternion,ArmquaternionPredicted,ArmquaternionObserved,Armposition,color='red')
+    head_position = []
+    head_position.extend([state_dict['Hpx'],state_dict['Hpy'],state_dict['Hpz']])
+    if body:
+        body_quat,body_predicted_quat,body_observed_quat,body_position = [],[],[],[]
+        body_quat.append([state_dict['Bq0'], state_dict['Bq1'], state_dict['Bq2'], state_dict['Bq3']])
+        body_position.extend([state_dict['Bpx'], state_dict['Bpy'], state_dict['Bpz']])
+        if ATTITUDEONLY:
+            body_position = [body_position[0]-head_position[0],body_position[1]-head_position[1],body_position[2]-head_position[2]]
+        rotate_and_plot(ax,body_quat,body_position,color='blue')
+        if 'BQp0' in state_dict.keys():
+            body_predicted_quat.append([state_dict['BQp0'], state_dict['BQp1'], state_dict['BQp2'], state_dict['BQp3']])
+            rotate_and_plot(ax,body_predicted_quat,body_position,color='blue')
+        if 'BQo0' in state_dict.keys():
+            body_observed_quat.append([state_dict['BQo0'], state_dict['BQo1'], state_dict['BQo2'], state_dict['BQo3']])
+            rotate_and_plot(ax,body_observed_quat,body_position,color='blue')
+        
+    if head:
+        head_quat,head_predicted_quat,head_observed_quat = [],[],[]
+        head_quat.append([state_dict['Hq0'],state_dict['Hq1'],state_dict['Hq2'],state_dict['Hq3']])
 
-    if Forearm:
-        Forearmquaternion,ForearmquaternionPredicted,ForearmquaternionObserved,Forearmposition = [],[],[],[]
-        Forearmquaternion.append([float(line[NToID['Fq0']]),float(line[NToID['Fq1']]),float(line[NToID['Fq2']]),float(line[NToID['Fq3']])])
-        ForearmquaternionPredicted.append([float(line[NToID['FQp0']]),float(line[NToID['FQp1']]),float(line[NToID['FQp2']]),float(line[NToID['FQp3']])])
-        ForearmquaternionObserved.append([float(line[NToID['FQo0']]),float(line[NToID['FQo1']]),float(line[NToID['FQo2']]),float(line[NToID['FQo3']])])
-        Forearmposition.extend([float(line[NToID['Fpx']]),float(line[NToID['Fpy']]),float(line[NToID['Fpz']])])
-        if AttitudeOnly:
-            Forearmposition = [Forearmposition[0]-Headposition[0],Forearmposition[1]-Headposition[1],Forearmposition[2]-Headposition[2]]
-        RotateAndPrint(ax,Forearmquaternion,ForearmquaternionPredicted,ForearmquaternionObserved,Forearmposition,color='green')
-    if Body and Head:
-        HeadRotation=quaternion_to_rotation_matrix(Headquaternion[0])
-        HeadShoulder = np.matmul(HeadRotation,np.array([0,-0.25,0]))
-        HeadBody = np.matmul(HeadRotation,np.array([-0.3,0,0]))
-        if AttitudeOnly:
-            Headposition = [0,0,0]
-        ShoulderPosition=Headposition+HeadShoulder
+        if ATTITUDEONLY:
+            rotate_and_plot(ax,head_quat,[0,0,0],color=False,dashed=True) # Black
+        # if 'HQp0' in state_dict.keys():
+        #     head_predicted_quat.append([state_dict['HQp0'],state_dict['HQp1'],state_dict['HQp2'],state_dict['HQp3']])
+        #     rotate_and_plot(ax,head_predicted_quat,head_position,color='black')
+        # if 'HQo0' in state_dict.keys():
+        #     head_observed_quat.append([state_dict['HQo0'],state_dict['HQo1'],state_dict['HQo2'],state_dict['HQo3']])
+        #     rotate_and_plot(ax,head_observed_quat,head_position,color='black')
+    if arm:
+        arm_quat,arm_predicted_quat,arm_observed_quat,arm_position = [],[],[],[]
+        arm_quat.append([state_dict['Aq0'],state_dict['Aq1'],state_dict['Aq2'],state_dict['Aq3']])
+
+        arm_position.extend([state_dict['Apx'],state_dict['Apy'],state_dict['Apz']])
+        if ATTITUDEONLY:
+            arm_position = [arm_position[0]-head_position[0],arm_position[1]-head_position[1],arm_position[2]-head_position[2]]
+        rotate_and_plot(ax,arm_quat,arm_position,color='red')
+        if 'AQp0' in state_dict.keys():
+            arm_predicted_quat.append([state_dict['AQp0'],state_dict['AQp1'],state_dict['AQp2'],state_dict['AQp3']])
+            rotate_and_plot(ax,arm_predicted_quat,arm_position,color='red')
+        if 'AQo0' in state_dict.keys():
+            arm_observed_quat.append([state_dict['AQo0'],state_dict['AQo1'],state_dict['AQo2'],state_dict['AQo3']])
+            rotate_and_plot(ax,arm_observed_quat,arm_position,color='red')
+
+    if forearm:
+        forearm_quat,forearm_predicted_quat,forearm_observed_quat,forearm_position = [],[],[],[]
+        forearm_quat.append([state_dict['Fq0'],state_dict['Fq1'],state_dict['Fq2'],state_dict['Fq3']])
+        forearm_position.extend([state_dict['Fpx'],state_dict['Fpy'],state_dict['Fpz']])
+        if ATTITUDEONLY:
+            forearm_position = [forearm_position[0]-head_position[0],forearm_position[1]-head_position[1],forearm_position[2]-head_position[2]]
+        rotate_and_plot(ax,forearm_quat,forearm_position,color='green')
+        if 'FQp0' in state_dict.keys():
+            forearm_predicted_quat.append([state_dict['FQp0'],state_dict['FQp1'],state_dict['FQp2'],state_dict['FQp3']])
+            rotate_and_plot(ax,forearm_predicted_quat,forearm_position,color='green')
+        if 'FQo0' in state_dict.keys():
+            forearm_observed_quat.append([state_dict['FQo0'],state_dict['FQo1'],state_dict['FQo2'],state_dict['FQo3']])
+            rotate_and_plot(ax,forearm_observed_quat,forearm_position,color='green')        
+
+    if body and head:
+        head_shoulder_vector = quat_transformation(head_quat[0],np.array([0,-0.25,0]))
+        head_body_vector = quat_transformation(head_quat[0],np.array([-0.3,0,0]))
+        if ATTITUDEONLY:
+            head_position = [0,0,0]
+        shoulder_position=head_position+head_shoulder_vector
         #Draw a line from Head to Shoulder
-        ax.plot([Headposition[0],Headposition[0]+HeadShoulder[0]],[Headposition[1],Headposition[1]+HeadShoulder[1]],[Headposition[2],Headposition[2]+HeadShoulder[2]],color='black')
+        ax.plot([head_position[0],head_position[0]+head_shoulder_vector[0]],
+                [head_position[1],head_position[1]+head_shoulder_vector[1]],
+                [head_position[2],head_position[2]+head_shoulder_vector[2]],color='black')
         #Draw a line from Head to Body
-        ax.plot([Headposition[0],Headposition[0]+HeadBody[0]],[Headposition[1],Headposition[1]+HeadBody[1]],[Headposition[2],Headposition[2]+HeadBody[2]],color='black')
+        ax.plot([head_position[0],head_position[0]+head_body_vector[0]],
+                [head_position[1],head_position[1]+head_body_vector[1]],
+                [head_position[2],head_position[2]+head_body_vector[2]],color='black')
 
-        ArmRotation=quaternion_to_rotation_matrix(Armquaternion[0])
-        Shoulderarm = np.matmul(ArmRotation,np.array([-0.15,0,0]))
-        #Draw a line from Arm to Shoulder
-        ax.plot([ShoulderPosition[0],ShoulderPosition[0]+Shoulderarm[0]],[ShoulderPosition[1],ShoulderPosition[1]+Shoulderarm[1]],[ShoulderPosition[2],ShoulderPosition[2]+Shoulderarm[2]],color='red')
+        shoulder_arm_vector = quat_transformation(arm_quat[0],np.array([-0.15,0,0]))
+        #Draw a line from arm to Shoulder
+        ax.plot([shoulder_position[0],shoulder_position[0]+shoulder_arm_vector[0]],
+                [shoulder_position[1],shoulder_position[1]+shoulder_arm_vector[1]],
+                [shoulder_position[2],shoulder_position[2]+shoulder_arm_vector[2]],color='red')
 
-        Elbowposition=ShoulderPosition+2*Shoulderarm
-        ax.plot([ShoulderPosition[0],Elbowposition[0]],[ShoulderPosition[1],Elbowposition[1]],[ShoulderPosition[2],Elbowposition[2]],color='red')
+        elbow_position=shoulder_position+2*shoulder_arm_vector
+        ax.plot([shoulder_position[0],elbow_position[0]],
+                [shoulder_position[1],elbow_position[1]],
+                [shoulder_position[2],elbow_position[2]],color='red')
 
-        ForearmRotation=quaternion_to_rotation_matrix(Forearmquaternion[0])
-        ElbowForearm = np.matmul(ForearmRotation,np.array([-0.15,0,0]))
+        elbow_forearm_vector = quat_transformation(forearm_quat[0],np.array([-0.15,0,0]))
         #Draw a line from Forearm to Elbow
-        ax.plot([Elbowposition[0],Elbowposition[0]+ElbowForearm[0]],[Elbowposition[1],Elbowposition[1]+ElbowForearm[1]],[Elbowposition[2],Elbowposition[2]+ElbowForearm[2]],color='green')
+        ax.plot([elbow_position[0],elbow_position[0]+elbow_forearm_vector[0]],
+                [elbow_position[1],elbow_position[1]+elbow_forearm_vector[1]],
+                [elbow_position[2],elbow_position[2]+elbow_forearm_vector[2]],color='green')
+
     
     ax.set_xlim(-1 , 1)
     ax.set_ylim(-1 , 1)
@@ -161,21 +170,12 @@ def animate_debug_quaternion(frame,ax,card,Body=True,Head=True,Arm=True,Forearm=
 
     return 
 
-def RotateAndPrint(ax,quaternion,quaternionPredicted,quaternionObserved,position,color=False):
+def rotate_and_plot(ax,quaternion,position,color=False,dashed=False):
     # take the conjugate of the quaternion
     quaternion[0] = [quaternion[0][0], quaternion[0][1], quaternion[0][2], quaternion[0][3]]
-    quaternionPredicted[0] = [quaternionPredicted[0][0], quaternionPredicted[0][1], quaternionPredicted[0][2], quaternionPredicted[0][3]]
-    quaternionObserved[0] = [quaternionObserved[0][0], quaternionObserved[0][1], quaternionObserved[0][2], quaternionObserved[0][3]] 
+    draw_arrow(ax,position,quaternion[0],dashed=dashed,color=color)
 
-    rotation_matrix=quaternion_to_rotation_matrix(quaternion[0])
-    rotation_matrixPredicted=quaternion_to_rotation_matrix(quaternionPredicted[0])
-    rotation_matrixObserved=quaternion_to_rotation_matrix(quaternionObserved[0])
-
-    # drawArrow(ax,position,rotation_matrix)
-    drawArrow(ax,position,rotation_matrixPredicted,color=color,scale=0.5)
-    # drawArrow(ax,position,rotation_matrixObserved,dashed=True,scale=2)
-    #drawArrow(ax,position,rotation_matrix,arrowstyle=True)
-def LiveAnimeation(DEBUG=False,card='head',Body=True,Head=True,Arm=True,Forearm=True):
+def live_animation(card,ntoid,DEBUG=False,body=True,head=True,arm=True,forearm=True):
     plt.rcParams["figure.figsize"] = [7.50, 3.50]
     plt.rcParams["figure.autolayout"] = True
     fig = plt.figure()
@@ -188,21 +188,21 @@ def LiveAnimeation(DEBUG=False,card='head',Body=True,Head=True,Arm=True,Forearm=
     initial_quaternion = [1.0, 0.0, 0.0, 0.0]
     initial_position = [0,0,0]
     
-    RotateAndPrint(ax,[initial_quaternion],[initial_quaternion],[initial_quaternion],initial_position)
+    rotate_and_plot(ax,[initial_quaternion],initial_position)
     # Set fixed axis limits
     ax.set_xlim(-2 , 3)
     ax.set_ylim(-2 , 3)
     ax.set_zlim(-2, 3)
     # Animate the plot
     if DEBUG:
-        ani = FuncAnimation(fig, animate_debug_quaternion, fargs=(ax,card,Body,Head,Arm,Forearm), interval=10, blit=True,cache_frame_data=False)
+        ani = FuncAnimation(fig, animate_debug_quaternion, fargs=(ax,card,ntoid,body,head,arm,forearm), interval=40, blit=True,cache_frame_data=False)
     else:
   
         ani = FuncAnimation(fig, animate, fargs=(ax,card), interval=10, blit=True,cache_frame_data=False)
 
     plt.show()
 
-def getAverageTime():
+def get_average_time():
     data = pd.read_csv("measures/e3_body_head@head.csv",names=['it','time0','time1','q0','q1','q2','q3','px','Vx','ax','p1','vy','ay','p2','vz','az'],header=None)
     sum=0
     for i in range(0,len(data)-1):
@@ -244,21 +244,22 @@ def _arrow3D(ax, x, y, z, dx, dy, dz, *args, **kwargs):
 
 setattr(Axes3D, 'arrow3D', _arrow3D) 
 
-def transformInitSpate(rotation_matrix,position,scale=1):
-    transformed_arrowx  = np.matmul(np.array(rotation_matrix), np.array([1*scale,0,0])) + position
-    transformed_arrowy = np.matmul(np.array(rotation_matrix), np.array([0,1*scale,0])) + position
-    transformed_arrowz = np.matmul(np.array(rotation_matrix), np.array([0,0,1*scale])) + position
+def arrow_to_global(quaternion,position,scale=1):
+    transformed_arrowx  = quat_transformation( quaternion,np.array([1*scale,0,0])) + position
+    transformed_arrowy = quat_transformation( quaternion,np.array([0,1*scale,0]),) + position
+    transformed_arrowz = quat_transformation(quaternion,np.array([0,0,1*scale])) + position
     return transformed_arrowx,transformed_arrowy,transformed_arrowz
 
-def transformArrow(x,y,z,rotation_matrix,position):
-    transformed_arrow  = np.matmul(np.array(rotation_matrix), np.array([x,y,z])) + position 
-    return transformed_arrow
-def drawArrow(ax,position,rotation_matrix,dashed=False,arrowstyle=False,color=False,scale=1):
-    transformed_arrowx ,transformed_arrowy,transformed_arrowz  = transformInitSpate(rotation_matrix,position,scale=0.5)
+
+def draw_arrow(ax,position,quaternion,dashed=False,arrowstyle=False,color=False,scale=0.10):
+    transformed_arrowx ,transformed_arrowy,transformed_arrowz  = arrow_to_global(quaternion,position,scale=scale)
     if color != False:
-        ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=10*scale,fc=color)
-        ax.arrow3D(position[0],position[1],position[2],transformed_arrowy[0],transformed_arrowy[1],transformed_arrowy[2],mutation_scale=10*scale,fc=color)
-        ax.arrow3D(position[0],position[1],position[2],transformed_arrowz[0],transformed_arrowz[1],transformed_arrowz[2],mutation_scale=10*scale,fc=color)
+        # ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=10*scale,fc=color)
+        ax.plot([position[0],transformed_arrowx[0]],[position[1],transformed_arrowx[1]],[position[2],transformed_arrowx[2]],color=color)
+        ax.plot([position[0],transformed_arrowy[0]],[position[1],transformed_arrowy[1]],[position[2],transformed_arrowy[2]],color=color)
+        ax.plot([position[0],transformed_arrowz[0]],[position[1],transformed_arrowz[1]],[position[2],transformed_arrowz[2]],color=color)
+        # ax.arrow3D(position[0],position[1],position[2],transformed_arrowy[0],transformed_arrowy[1],transformed_arrowy[2],mutation_scale=10*scale,fc=color)
+        # ax.arrow3D(position[0],position[1],position[2],transformed_arrowz[0],transformed_arrowz[1],transformed_arrowz[2],mutation_scale=10*scale,fc=color)
         return
     if dashed:
         ax.arrow3D(position[0],position[1],position[2],transformed_arrowx[0],transformed_arrowx[1],transformed_arrowx[2],mutation_scale=10*scale,fc='blue',linestyle='dashed')
@@ -273,8 +274,30 @@ def drawArrow(ax,position,rotation_matrix,dashed=False,arrowstyle=False,color=Fa
         ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowy[0],position[1]+transformed_arrowy[1],position[2]+transformed_arrowy[2],mutation_scale=10*scale,fc='green',arrowstyle='->')
         ax.arrow3D(position[0],position[1],position[2],position[0]+transformed_arrowz[0],position[1]+transformed_arrowz[1],position[2]+transformed_arrowz[2],mutation_scale=10*scale,fc='red',arrowstyle='->')
 
-ID = 0
-live = True
-AttitudeOnly = True
-LiveAnimeation(DEBUG=True,card='head',Body=True,Head=True,Arm=True,Forearm=True)
-# getAverageTime()
+def quat_transformation(quat, vector):
+    p_quat = np.array([0, vector[0], vector[1], vector[2]])
+    q_conj = np.array([quat[0], -quat[1], -quat[2], -quat[3]])
+    p_quat_conj = quat_product(quat_product(quat,p_quat), q_conj)
+    return p_quat_conj[1:]
+def quat_product(q1, q2):
+    q11, q12, q13, q14 = q1
+    q21, q22, q23, q24 = q2
+    return np.array([q11*q21 - q12*q22 - q13*q23 - q14*q24,
+                        q11*q22 + q12*q21 + q13*q24 - q14*q23,
+                        q11*q23 - q12*q24 + q13*q21 + q14*q22,
+                        q11*q24 + q12*q23 - q13*q22 + q14*q21])
+
+# col_names=['it','time0','time1']
+# Head_names=['Hq0','Hq1','Hq2','Hq3','HQp0','HQp1','HQp2','HQp3','HQo0','HQo1','HQo2','HQo3','Hpx','HVx','Hax','Hpy','Hvy','Hay','Hpz','Hvz','Haz']
+# Body_names=['Bq0','Bq1','Bq2','Bq3','BQp0','BQp1','BQp2','BQp3','BQo0','BQo1','BQo2','BQo3','Bpx','BVx','Bax','Bpy','Bvy','Bay','Bpz','Bvz','Baz']
+# arm_names=['Aq0','Aq1','Aq2','Aq3','AQp0','AQp1','AQp2','AQp3','AQo0','AQo1','AQo2','AQo3','Apx','AVx','Aax','Apy','Avy','Aay','Apz','Avz','Aaz']
+# Forearm_names=['Fq0','Fq1','Fq2','Fq3','FQp0','FQp1','FQp2','FQp3','FQo0','FQo1','FQo2','FQo3','Fpx','FVx','Fax','Fpy','Fvy','Fay','Fpz','Fvz','Faz']
+# # DATA=["ax","ay","az","mx","my","mz"]
+# col_names.extend(Head_names)
+# col_names.extend(Body_names)
+# col_names.extend(arm_names)
+# col_names.extend(Forearm_names)
+# # col_names.extend(DATA)
+# ntoid={name:ID for ID,name in enumerate(col_names)}
+# live_animation("measures/e2_body_head@head.csv",ntoid,DEBUG=True,Body=True,Head=True,arm=True,forearm=True)
+# # get_average_time()
