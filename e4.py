@@ -125,6 +125,8 @@ class DataIterable():
     def __str__(self):
         print(self.card)
         return None
+    
+
 class ModelKalmanFilter(ExtendedKalmanFilter):
     def __init__(self,dim_x,dim_z,dim_u=0):
         super().__init__(dim_x,dim_z,dim_u)
@@ -222,6 +224,7 @@ class ModelKalmanFilter(ExtendedKalmanFilter):
         self.x_post = self.x.copy()
         self.P_post = self.P.copy()
 
+
 def get_quat_pred_matrix(dt,gyro):
     """ gyro is a 3 element array of gyro measurements in radians per second
     dt is a time intreval in seconds 
@@ -235,25 +238,99 @@ def get_quat_pred_matrix(dt,gyro):
         [wz, -wy, wx, 0]
     ])
     return np.eye(4) + 0.5 * dt * omega
-def get_position_pred_matrix(dt):
+def get_position_pred_matrix(dt,state_dict,ntoid):
     """
     dt is a time intreval in seconds
     Returns the position prediction matrix for a global to local position
     TODO : Acceleration should be in the local ??
     """
-    return np.array([[1,0,0,dt,0,0,(dt**2)/2,0,0],
-                    [0,1,0,0,dt,0,0,(dt**2)/2,0],
-                    [0,0,1,0,0,dt,0,0,(dt**2)/2],
-                    [0,0,0,1,0,0,dt,0,0],
-                    [0,0,0,0,1,0,0,dt,0],
-                    [0,0,0,0,0,1,0,0,dt],
-                    [0,0,0,0,0,0,1,0,0],
-                    [0,0,0,0,0,0,0,1,0],
-                    [0,0,0,0,0,0,0,0,1]])
-def get_body_position_matrix(dt,state,ntoid):
+    """
+    rotation of acceleration is defined by:
+    a_north = a_x*2*(q0^2+q1^2-0.5)-a_y*2(q1*q2+q0*q3)-a_z*2(q1*q3-q0*q2)
+    a_up = a_x*2(q1*q2+q0*q3)+a_y*2(q0^2+q2^2-0.5)+a_z*2(q2*q3-q0*q1)
+    a_east = a_x*2(q1*q3-q0*q2)+a_y*2(q2*q3+q0*q1)+a_z*2(q0^2+q3^2-0.5)
+    """
+    q0,q1,q2,q3 = state_dict['Hq0'],state_dict['Hq1'],state_dict['Hq2'],state_dict['Hq3']
+    ax,ay,az = state_dict['h_ax'],state_dict['h_ay'],state_dict['h_az']
+    da_northdq0 = 4*q0*ax - 2*q3*ay - 2*q2*az
+    da_northdq1 = 4*q1*ax + 2*q2*ay + 2*q3*az
+    da_northdq2 = 2*q1*ay + 2*q0*az
+    da_northdq3 = -2*q0*ay + 2*q1*az
+    da_northdax = 2*q0**2 + 2*q1**2 - 1
+    da_northday = 2*q1*q2 - 2*q0*q3
+    da_northdaz = 2*q1*q3 + 2*q0*q2
+
+    da_updq0 = 2*q3*ax + 4*q0*ay - 2*q1*az
+    da_updq1 = 2*q2*ax - 2*q0*az
+    da_updq2 = 2*q1*ax + 4*q2*ay + 2*q3*az
+    da_updq3 = 2*q0*ax + 2*q2*az
+    da_updax = 2*q1*q2 + 2*q0*q3
+    da_upday = 2*(q0**2 + q2**2 - 1)
+    da_updaz = 2*q2*q3 - 2*q0*q1
+
+    da_eastdq0 = -2*q2*ax + 2*q1*ay + 4*q0*az
+    da_eastdq1 = 2*q3*ax + 2*q0*ay 
+    da_eastdq2 = -2*q0*ax + 2*q3*ay 
+    da_easddq3 = 2*q1*ax + 2*q2*ay + 4*q3*az
+    da_eastdax = 2*q1*q3 - 2*q0*q2
+    da_eastday = 2*q2*q3 + 2*q0*q1
+    da_eastdaz = 2*q0**2 + 2*q3**2 - 1
+
+    p_north = np.zeros(len(state_dict.keys()))
+    p_north[ntoid['Hpx']]=1
+    p_north[ntoid['h_vx']]=dt
+
+    p_north[ntoid['Hq0']]=da_northdq0*dt
+    p_north[ntoid['Hq1']]=da_northdq1*dt
+    p_north[ntoid['Hq2']]=da_northdq2*dt
+    p_north[ntoid['Hq3']]=da_northdq3*dt
+    p_north[ntoid['h_ax']]=da_northdax*dt
+    p_north[ntoid['h_ay']]=da_northday*dt
+    p_north[ntoid['h_az']]=da_northdaz*dt
+
+    p_up = np.zeros(len(state_dict.keys()))
+    p_up[ntoid['Hpy']]=1
+    p_up[ntoid['h_vy']]=dt
+
+    p_up[ntoid['Hq0']]=da_updq0*dt
+    p_up[ntoid['Hq1']]=da_updq1*dt
+    p_up[ntoid['Hq2']]=da_updq2*dt
+    p_up[ntoid['Hq3']]=da_updq3*dt
+    p_up[ntoid['h_ax']]=da_updax*dt
+    p_up[ntoid['h_ay']]=da_upday*dt
+    p_up[ntoid['h_az']]=da_updaz*dt
+
+    p_east = np.zeros(len(state_dict.keys()))
+    p_east[ntoid['Hpz']]=1
+    p_east[ntoid['h_vz']]=dt
+
+    p_east[ntoid['Hq0']]=da_eastdq0*dt
+    p_east[ntoid['Hq1']]=da_eastdq1*dt
+    p_east[ntoid['Hq2']]=da_eastdq2*dt
+    p_east[ntoid['Hq3']]=da_easddq3*dt
+    p_east[ntoid['h_ax']]=da_eastdax*dt
+    p_east[ntoid['h_ay']]=da_eastday*dt
+    p_east[ntoid['h_az']]=da_eastdaz*dt
+
+    v_north = np.zeros(len(state_dict.keys()))
+    v_north[ntoid['h_vx']]=1
+    v_north[ntoid['h_ax']]=dt
+
+    v_up = np.zeros(len(state_dict.keys()))
+    v_up[ntoid['h_vz']]=1
+    v_up[ntoid['h_ay']]=dt
+
+    v_east = np.zeros(len(state_dict.keys()))
+    v_east[ntoid['h_vz']]=1
+    v_east[ntoid['h_az']]=dt
+
+
+    return (p_north,p_up,p_east,v_north,v_up,v_east)
+def get_jacobian_position_matrix(dt,state,ntoid):
     """dt is a time intreval in seconds
     state is list representing the state of the system
-    ntoid is a dictionary mapping the name of the state to its index in the state list
+    ntoid is a dictionary mapping the name of the state to its index in the 
+    state list
     returns the jacobian matrix of the sensor position
     """
     n=len(state.keys())
@@ -352,7 +429,8 @@ def get_body_position_matrix(dt,state,ntoid):
     forearm_z_position[ntoid['Fq1']]=-0.3*state['Fq3']
     forearm_z_position[ntoid['Fq2']]=0.3*state['Fq0']
     forearm_z_position[ntoid['Fq3']]=-0.3*state['Fq1']
-    return body_x_position,body_y_position,body_z_position,arm_x_position,arm_y_position,arm_z_position,forearm_x_position,forearm_y_position,forearm_z_position
+    return (body_x_position,body_y_position,body_z_position,arm_x_position,
+            arm_y_position,arm_z_position,forearm_x_position,forearm_y_position,forearm_z_position)
 
 
 
@@ -361,13 +439,20 @@ def jacobian_state_transition_matrix(state,dt):
     dt is the time interval
     returns the jacobian matrix of the state transition
     """
+    acc=[0,0,0]
     state_dict,ntoid,idton = state_to_state_dict(state)
     matrix=np.zeros((len(state),len(state)))
-    dt=0.01
-    body_x_position,body_y_position,body_z_position,arm_x_position,arm_y_position,arm_y_position,forearm_x_position,forearm_y_position,forearm_z_position=get_body_position_matrix(dt,state_dict,ntoid)
-    matrix[ntoid['Hq0']:ntoid['Hq3']+1,ntoid['Hq0']:ntoid['Hq3']+1]=get_quat_pred_matrix(dt,[state_dict["gHpx"],state_dict["gHpy"],state_dict["gHpz"]])
-    matrix[ntoid['Hpx']:ntoid['aHpz']+1,ntoid['Hpx']:ntoid['aHpz']+1]=get_position_pred_matrix(dt)
-    matrix[ntoid['gHpx']:ntoid['gHpz']+1,ntoid['gHpx']:ntoid['gHpz']+1]=np.eye(3)
+    (p_north,p_up,p_east,v_north,v_up,v_east)=get_position_pred_matrix(dt,state_dict,ntoid)
+    matrix[ntoid['Hpx']]=p_north
+    matrix[ntoid['Hpy']]=p_up
+    matrix[ntoid['Hpz']]=p_east
+    matrix[ntoid['h_vx']]=v_north
+    matrix[ntoid['h_vy']]=v_up
+    matrix[ntoid['h_vz']]=v_east
+
+    body_x_position,body_y_position,body_z_position,arm_x_position,arm_y_position,arm_y_position,forearm_x_position,forearm_y_position,forearm_z_position=get_jacobian_position_matrix(dt,state_dict,ntoid)
+    matrix[ntoid['Hq0']:ntoid['Hq3']+1,ntoid['Hq0']:ntoid['Hq3']+1]=get_quat_pred_matrix(dt,[state_dict["h_gx"],state_dict["h_gy"],state_dict["h_gz"]])
+    matrix[ntoid['h_gx']:ntoid['h_gz']+1,ntoid['h_gx']:ntoid['h_gz']+1]=np.eye(3)
 
     matrix[ntoid['Bq0']:ntoid['Bq3']+1,ntoid['Bq0']:ntoid['Bq3']+1]=get_quat_pred_matrix(dt,[state_dict["gBpx"],state_dict["gBpy"],state_dict["gBpz"]])
     matrix[ntoid['Bpx']]=body_x_position
@@ -381,7 +466,8 @@ def jacobian_state_transition_matrix(state,dt):
     matrix[ntoid['Apz']]=arm_y_position
     matrix[ntoid['gApx']:ntoid['gApz']+1,ntoid['gApx']:ntoid['gApz']+1]=np.eye(3)
 
-    matrix[ntoid['Fq0']:ntoid['Fq3']+1,ntoid['Fq0']:ntoid['Fq3']+1]=get_quat_pred_matrix(dt,[state_dict["gApx"],state_dict["gApy"],state_dict["gApz"]])
+    matrix[ntoid['Fq0']:ntoid['Fq3']+1,ntoid['Fq0']:ntoid['Fq3']+1]=get_quat_pred_matrix(
+                                dt,[state_dict["gApx"],state_dict["gApy"],state_dict["gApz"]])
     matrix[ntoid['Fpx']]=forearm_x_position
     matrix[ntoid['Fpy']]=forearm_y_position
     matrix[ntoid['Fpz']]=forearm_z_position
@@ -398,13 +484,19 @@ def kalman_filtering(file):
     """File is the file containing the data
     returns the results of the kalman filtering
     """
-    data_head,data_body,data_arm,data_forearm=DataIterable(file,"head"),DataIterable(file,"body"),DataIterable(file,"arm"),DataIterable(file,"forearm")
-    state_dict,ntoid,idton=init_state(data_head.data,data_body.data,data_arm.data,data_forearm.data)
-    sensor=min([data_head,data_body,data_arm,data_forearm],key=lambda x: x.data['time'][x.i] if x.data is not None else np.inf)
+    data_head,data_body,data_arm,data_forearm=(DataIterable(file,"head"),
+                                               DataIterable(file,"body"),
+                                               DataIterable(file,"arm"),
+                                               DataIterable(file,"forearm"))
+    state_dict,ntoid,idton=init_state(data_head.data,data_body.data,
+                                      data_arm.data,data_forearm.data)
+    sensor=min([data_head,data_body,data_arm,data_forearm],
+               key=lambda x: x.data['time'][x.i] if x.data is not None else np.inf)
     last_time=sensor.data['time'][sensor.i]
     current_time=last_time
     sensor.i+=1
-    next_sensor=min(data_head,data_body,data_arm,data_forearm,key=lambda x: x.data['time'][x.i] if x.data is not None and x.i < len(x.data) else np.inf)
+    next_sensor=min(data_head,data_body,data_arm,data_forearm,
+                    key=lambda x: x.data['time'][x.i] if x.data is not None and x.i < len(x.data) else np.inf)
     dt=(next_sensor.data['time'][next_sensor.i]-last_time)/1000
 
     state=[state_dict[idton[i]] for i in range(len(idton))]
@@ -418,8 +510,10 @@ def kalman_filtering(file):
     len_body=len(data_body.data) if data_body.data is not None else 0
     len_arm=len(data_arm.data) if data_arm.data is not None else 0
     len_forearm=len(data_forearm.data) if data_forearm.data is not None else 0
-    while data_head.i<len_head or data_body.i<len_body or data_arm.i<len_arm or data_forearm.i<len_forearm:
-        sensor=min(data_head,data_body,data_arm,data_forearm,key=lambda x: x.data['time'][x.i] if x.data is not None and x.i < len(x.data) else np.inf)
+    while (data_head.i<len_head or data_body.i<len_body 
+           or data_arm.i<len_arm or data_forearm.i<len_forearm):
+        sensor=min(data_head,data_body,data_arm,data_forearm,
+                   key=lambda x: x.data['time'][x.i] if x.data is not None and x.i < len(x.data) else np.inf)
         current_time=sensor.data['time'][sensor.i]
         dt= (current_time-last_time)/1000
 
@@ -434,46 +528,60 @@ def kalman_filtering(file):
         if sensor.card=="head":
             # print("Head")
             qn= [1,0,0,0]
-            accl = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],sensor.data['az'][sensor.i]]
-            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],sensor.data['mz'][sensor.i]]
+            accl = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],
+                    sensor.data['az'][sensor.i]]
+            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],
+                   sensor.data['mz'][sensor.i]]
             z=quat_conjugate(quat_observation(qn,accl,mag))  # quaternion from local to global
             z=np.append(z,[accl[0],accl[1],accl[2]])
-            z=np.append(z,[sensor.data['gx'][sensor.i],sensor.data['gy'][sensor.i],sensor.data['gz'][sensor.i]])
+            z=np.append(z,[sensor.data['gx'][sensor.i],
+                           sensor.data['gy'][sensor.i],
+                           sensor.data['gz'][sensor.i]])
             state_to_measurement_matrix = np.zeros((10,len(state)))
             state_to_measurement_matrix[0:4,ntoid['Hq0']:ntoid['Hq3']+1]=np.eye(4)
-            state_to_measurement_matrix[4:7,ntoid['aHpx']:ntoid['aHpz']+1]=np.eye(3)
-            state_to_measurement_matrix[7:,ntoid['gHpx']:ntoid['gHpz']+1]=np.eye(3)
+            state_to_measurement_matrix[4:7,ntoid['h_ax']:ntoid['h_az']+1]=np.eye(3)
+            state_to_measurement_matrix[7:,ntoid['h_gx']:ntoid['h_gz']+1]=np.eye(3)
             filter.update(z,state_to_measurement_matrix,ntoid,R=np.eye(10)*0.001)
         elif sensor.card=="body":
             qn= [1,0,0,0]
-            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],sensor.data['az'][sensor.i]]
-            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],sensor.data['mz'][sensor.i]]
+            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],
+                   sensor.data['az'][sensor.i]]
+            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],
+                   sensor.data['mz'][sensor.i]]
             z=quat_conjugate(quat_observation(qn,acc,mag)) # Local to Global
-            z=np.append(z,[sensor.data['gx'][sensor.i],sensor.data['gy'][sensor.i],sensor.data['gz'][sensor.i]])
+            z=np.append(z,[sensor.data['gx'][sensor.i],
+                           sensor.data['gy'][sensor.i],
+                           sensor.data['gz'][sensor.i]])
             state_to_measurement_matrix = np.zeros((7,len(state)))
             state_to_measurement_matrix[0:4,ntoid['Bq0']:ntoid['Bq3']+1]=np.eye(4)
             state_to_measurement_matrix[4:,ntoid['gBpx']:ntoid['gBpz']+1]=np.eye(3)
             filter.update(z,state_to_measurement_matrix,ntoid,R=np.eye(7)*0.001)
-
-
         elif sensor.card=="arm":
             qn=[1,0,0,0]
-            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],sensor.data['az'][sensor.i]]
-            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],sensor.data['mz'][sensor.i]]
+            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],
+                   sensor.data['az'][sensor.i]]
+            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],
+                   sensor.data['mz'][sensor.i]]
             z=quat_conjugate(quat_observation(qn,acc,mag)) # Local to Global
-            z=np.append(z,[sensor.data['gx'][sensor.i],sensor.data['gy'][sensor.i],sensor.data['gz'][sensor.i]])
+            z=np.append(z,[sensor.data['gx'][sensor.i],
+                           sensor.data['gy'][sensor.i],
+                           sensor.data['gz'][sensor.i]])
             state_to_measurement_matrix = np.zeros((7,len(state)))
             state_to_measurement_matrix[0:4,ntoid['Aq0']:ntoid['Aq3']+1]=np.eye(4)
             state_to_measurement_matrix[4:,ntoid['gApx']:ntoid['gApz']+1]=np.eye(3)
-            print("Arm quaternion before update",filter.x[ntoid['Aq0']:ntoid['Aq3']+1],"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            filter.update(z,state_to_measurement_matrix,ntoid,R=np.eye(7)*0.001)
+            print("Arm quaternion before update",
+                  filter.x[ntoid['Aq0']:ntoid['Aq3']+1],"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            filter.update(z,state_to_measurement_matrix,
+                          ntoid,R=np.eye(7)*0.001)
             print("Arm quaternion after update",filter.x[ntoid['Aq0']:ntoid['Aq3']+1])
             print(" Measurement",z)
 
         elif sensor.card=="forearm":
             qn= [1,0,0,0]
-            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],sensor.data['az'][sensor.i]]
-            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],sensor.data['mz'][sensor.i]]
+            acc = [sensor.data['ax'][sensor.i],sensor.data['ay'][sensor.i],
+                   sensor.data['az'][sensor.i]]
+            mag = [sensor.data['mx'][sensor.i],sensor.data['my'][sensor.i],
+                   sensor.data['mz'][sensor.i]]
             z=quat_conjugate(quat_observation(qn,acc,mag))
             z=np.append(z,[sensor.data['gx'][sensor.i],sensor.data['gy'][sensor.i],sensor.data['gz'][sensor.i]])
             state_to_measurement_matrix = np.zeros((7,len(state)))
@@ -490,16 +598,20 @@ def state_prediction(state_dict,dt,ntoid):
     ntoid is a dictionary mapping the name of the state to its index in the state list
     returns the predicted state of the system
     """
-    state_head = [state_dict['Hpx'],state_dict["vHpx"],state_dict['Hpy'],state_dict['vHpy'],state_dict['Hpz'],state_dict['vHpz']]
-    quat_head= [state_dict['Hq0'],state_dict['Hq1'],state_dict['Hq2'],state_dict['Hq3']]
+    state_head = [state_dict['Hpx'],state_dict["h_vx"],state_dict['Hpy'],
+                  state_dict['h_vy'],state_dict['Hpz'],state_dict['h_vz']]
+    quat_head= [state_dict['Hq0'],state_dict['Hq1'],state_dict['Hq2'],
+                state_dict['Hq3']]
     conj_quat_head=quat_conjugate(quat_head)
-    kalman_filter_quat_head=KalmanFilterQuat([state_dict['gHpx'],state_dict['gHpy'],state_dict['gHpz']],dt,conj_quat_head)
+    kalman_filter_quat_head=KalmanFilterQuat([state_dict['h_gx'],
+                                              state_dict['h_gy'],state_dict['h_gz']],dt,conj_quat_head)
     kalman_filter_pos_head=KalmanFilterPos(dt,state_head)
     
-    accl_head=[state_dict['aHpx'],state_dict['aHpy'],state_dict['aHpz']]
+    accl_head=[state_dict['h_ax'],state_dict['h_ay'],state_dict['h_az']]
     accg_head= quat_transformation(quat_head,accl_head)
     accg_head[1]-=9.81 # remove gravity
-    kalman_filter_quat_head.update_pred_matrix(dt,[state_dict['gHpx'],state_dict['gHpy'],state_dict['gHpz']])
+    kalman_filter_quat_head.update_pred_matrix(dt,[state_dict['h_gx'],
+                                                   state_dict['h_gy'],state_dict['h_gz']])
     kalman_filter_pos_head.kalman_predict(u=accg_head)
     kalman_filter_quat_head.kalman_predict()
     kalman_filter_pos_head.kalman_update()
@@ -510,44 +622,76 @@ def state_prediction(state_dict,dt,ntoid):
     new_v_head = state_head.reshape(3,2)[:,1]
     new_quat_head = quat_conjugate(kalman_filter_quat_head.result[-1])
     
-    conj_quat_body= quat_conjugate([state_dict['Bq0'],state_dict['Bq1'],state_dict['Bq2'],state_dict['Bq3']])
-    kalman_filter_quat_body=KalmanFilterQuat([state_dict['gBpx'],state_dict['gBpy'],state_dict['gBpz']],dt,conj_quat_body)
+    conj_quat_body= quat_conjugate([state_dict['Bq0'],state_dict['Bq1'],
+                                    state_dict['Bq2'],state_dict['Bq3']])
+    kalman_filter_quat_body=KalmanFilterQuat([state_dict['gBpx'],
+                                              state_dict['gBpy'],
+                                              state_dict['gBpz']],
+                                              dt,conj_quat_body)
     new_pos_body = new_pos_head + quat_transformation(quat_head,[-0.3,0,0])
-    kalman_filter_quat_body.update_pred_matrix(dt,[state_dict['gBpx'],state_dict['gBpy'],state_dict['gBpz']])
+    kalman_filter_quat_body.update_pred_matrix(dt,[state_dict['gBpx'],
+                                                   state_dict['gBpy'],
+                                                   state_dict['gBpz']])
     kalman_filter_quat_body.kalman_predict()
     kalman_filter_quat_body.kalman_update()
     new_quat_body = quat_conjugate(kalman_filter_quat_body.result[-1])
 
     quat_arm = [state_dict['Aq0'],state_dict['Aq1'],state_dict['Aq2'],state_dict['Aq3']]
-    pos_arm = new_pos_head + quat_transformation(quat_head,[0,-0.25,0]) + quat_transformation(quat_arm,[-0.15,0,0])
-
+    pos_arm = (new_pos_head + quat_transformation(quat_head,[0,-0.25,0])
+               + quat_transformation(quat_arm,[-0.15,0,0]))
 
     conj_quat_arm = quat_conjugate(quat_arm)
     print("Arm quaternion before predict",quat_arm)
-    kalman_filter_quat_arm=KalmanFilterQuat([state_dict['gApx'],state_dict['gApy'],state_dict['gApz']],dt,conj_quat_arm)
-    kalman_filter_quat_arm.update_pred_matrix(dt,[state_dict['gApx'],state_dict['gApy'],state_dict['gApz']])
+    kalman_filter_quat_arm=KalmanFilterQuat([state_dict['gApx'],
+                                             state_dict['gApy'],
+                                             state_dict['gApz']],
+                                             dt,conj_quat_arm)
+    kalman_filter_quat_arm.update_pred_matrix(dt,[state_dict['gApx'],
+                                                  state_dict['gApy'],
+                                                  state_dict['gApz']])
     kalman_filter_quat_arm.kalman_predict()
     kalman_filter_quat_arm.kalman_update()
 
     new_quat_arm = quat_conjugate(kalman_filter_quat_arm.result[-1])
     print("Arm quaternion after predict",new_quat_arm)
-    quat_forearm = [state_dict['Fq0'],state_dict['Fq1'],state_dict['Fq2'],state_dict['Fq3']]
-    pos_forearm = pos_arm + quat_transformation(quat_arm,[-0.15,0,0]) + quat_transformation(quat_forearm,[-0.15,0,0])
+    quat_forearm = [state_dict['Fq0'],state_dict['Fq1'],
+                    state_dict['Fq2'],state_dict['Fq3']]
+    pos_forearm = (pos_arm + quat_transformation(quat_arm,[-0.15,0,0]) 
+    + quat_transformation(quat_forearm,[-0.15,0,0]))
 
     conj_quat_forearm=quat_conjugate(quat_forearm) # Global to Local
-    kalman_filter_quat_forearm=KalmanFilterQuat([state_dict['gFpx'],state_dict['gFpy'],state_dict['gFpz']],dt,conj_quat_forearm)
-    kalman_filter_quat_forearm.update_pred_matrix(dt,[state_dict['gFpx'],state_dict['gFpy'],state_dict['gFpz']])
+    kalman_filter_quat_forearm=KalmanFilterQuat([state_dict['gFpx'],
+                                                 state_dict['gFpy'],
+                                                 state_dict['gFpz']],
+                                                 dt,conj_quat_forearm)
+    kalman_filter_quat_forearm.update_pred_matrix(dt,[state_dict['gFpx'],
+                                                      state_dict['gFpy'],
+                                                      state_dict['gFpz']])
     kalman_filter_quat_forearm.kalman_predict()
     kalman_filter_quat_forearm.kalman_update()
     new_quat_forearm = quat_conjugate(kalman_filter_quat_forearm.result[-1])
 
 
-    state={'Hq0':new_quat_head[0],'Hq1':new_quat_head[1],'Hq2':new_quat_head[2],'Hq3':new_quat_head[3],'Hpx':new_pos_head[0],'Hpy':new_pos_head[1],'Hpz':new_pos_head[2],'vHpx':new_v_head[0],'vHpy':new_v_head[1],
-           'vHpz':new_v_head[2],'aHpx':state_dict['aHpx'],'aHpy':state_dict['aHpy'],'aHpz':state_dict['aHpz'],'gHpx':state_dict['gHpx'],'gHpy':state_dict['gHpy'],'gHpz':state_dict['gHpz'],
-           'Bq0':new_quat_body[0],'Bq1':new_quat_body[1],'Bq2':new_quat_body[2],'Bq3':new_quat_body[3],'Bpx':new_pos_body[0],'Bpy':new_pos_body[1],'Bpz':new_pos_body[2],'gBpx':state_dict['gBpx'],'gBpy':state_dict['gBpy'],
-           'gBpz':state_dict['gBpz'],'Aq0':new_quat_arm[0],'Aq1':new_quat_arm[1],'Aq2':new_quat_arm[2],'Aq3':new_quat_arm[3],'Apx':pos_arm[0],'Apy':pos_arm[1],'Apz':pos_arm[2],'gApx':state_dict['gApx'],'gApy':state_dict['gApy'],
-            'gApz':state_dict['gApz'],'Fq0':new_quat_forearm[0],'Fq1':new_quat_forearm[1],'Fq2':new_quat_forearm[2],'Fq3':new_quat_forearm[3],'Fpx':pos_forearm[0],'Fpy':pos_forearm[1],'Fpz':pos_forearm[2],
-            'gFpx':state_dict['gFpx'],'gFpy':state_dict['gFpy'],'gFpz':state_dict['gFpz']}
+    state={'Hq0':new_quat_head[0],'Hq1':new_quat_head[1],'Hq2':new_quat_head[2],
+           'Hq3':new_quat_head[3],'Hpx':new_pos_head[0],'Hpy':new_pos_head[1],
+           'Hpz':new_pos_head[2],'h_vx':new_v_head[0],'h_vy':new_v_head[1],
+           'h_vz':new_v_head[2],'h_ax':state_dict['h_ax'],
+           'h_ay':state_dict['h_ay'],'h_az':state_dict['h_az'],
+           'h_gx':state_dict['h_gx'],'h_gy':state_dict['h_gy'],
+           'h_gz':state_dict['h_gz'],'Bq0':new_quat_body[0],
+           'Bq1':new_quat_body[1],'Bq2':new_quat_body[2],
+           'Bq3':new_quat_body[3],'Bpx':new_pos_body[0],'Bpy':new_pos_body[1],
+           'Bpz':new_pos_body[2],'gBpx':state_dict['gBpx'],
+           'gBpy':state_dict['gBpy'],'gBpz':state_dict['gBpz'],
+           'Aq0':new_quat_arm[0],'Aq1':new_quat_arm[1],'Aq2':new_quat_arm[2],
+           'Aq3':new_quat_arm[3],'Apx':pos_arm[0],'Apy':pos_arm[1],
+           'Apz':pos_arm[2],'gApx':state_dict['gApx'],
+           'gApy':state_dict['gApy'],'gApz':state_dict['gApz'],
+           'Fq0':new_quat_forearm[0],'Fq1':new_quat_forearm[1],
+           'Fq2':new_quat_forearm[2],'Fq3':new_quat_forearm[3],
+           'Fpx':pos_forearm[0],'Fpy':pos_forearm[1],
+           'Fpz':pos_forearm[2],'gFpx':state_dict['gFpx'],
+           'gFpy':state_dict['gFpy'],'gFpz':state_dict['gFpz']}
     new_state=np.zeros(len(state_dict.keys()))
     for key in state_dict.keys():
         new_state[ntoid[key]]=state[key]
@@ -560,27 +704,40 @@ def init_state(data_head,data_body,data_arm,data_forearm):
     data_forearm is the data from the forearm sensor
     """
     state_dict,ntoid,idtoname=state_to_state_dict(np.zeros(46))
-    quat_head = quat_conjugate(quat_observation([1, 0, 0, 0],[data_head['ax'][0],data_head['ay'][0],data_head['az'][0]], [data_head['mx'][0],data_head['my'][0],data_head['mz'][0]],mua=1))
+    quat_head = quat_conjugate(quat_observation([1, 0, 0, 0],
+                                    [data_head['ax'][0], data_head['ay'][0],
+                                    data_head['az'][0]], [data_head['mx'][0],
+                                    data_head['my'][0],data_head['mz'][0]],mua=1))
     state_dict['Hq0'],state_dict['Hq1'],state_dict['Hq2'],state_dict['Hq3'] = quat_head
     if data_body is not None:
-        quatBody = quat_conjugate(quat_observation([1, 0, 0, 0],[data_body['ax'][0],data_body['ay'][0],data_body['az'][0]], [data_body['mx'][0],data_body['my'][0],data_body['mz'][0]],mua=1))
+        quatBody = quat_conjugate(quat_observation([1, 0, 0, 0],[data_body['ax'][0],
+                                        data_body['ay'][0],data_body['az'][0]],
+                                        [data_body['mx'][0],data_body['my'][0],
+                                         data_body['mz'][0]],mua=1))
     else:
         quatBody = quat_head
     state_dict['Bq0'],state_dict['Bq1'],state_dict['Bq2'],state_dict['Bq3'] = quatBody
-    state_dict['Bpx'],state_dict['Bpy'],state_dict['Bpz'] = [0,0,0] + quat_transformation(quat_head,[-0.3,0,0])
+    state_dict['Bpx'],state_dict['Bpy'],state_dict['Bpz'] = [0,0,0] 
+    + quat_transformation(quat_head,[-0.3,0,0])
     if data_arm is not None:
-        quat_arm = quat_conjugate(quat_observation([1, 0, 0, 0],[data_arm['ax'][0],data_arm['ay'][0],data_arm['az'][0]], [data_arm['mx'][0],data_arm['my'][0],data_arm['mz'][0]],mua=1))
+        quat_arm = quat_conjugate(quat_observation([1, 0, 0, 0],
+                                    [data_arm['ax'][0], data_arm['ay'][0],data_arm['az'][0]],
+                                    [data_arm['mx'][0],data_arm['my'][0],data_arm['mz'][0]],mua=1))
     else:
         quat_arm = quat_head
     state_dict['Aq0'],state_dict['Aq1'],state_dict['Aq2'],state_dict['Aq3'] = quat_arm
-    pos_arm = [0,0,0] + quat_transformation(quat_head,[0,-0.15,0]) + quat_transformation(quat_arm,[-0.15,0,0])
+    pos_arm = [0,0,0] + quat_transformation(quat_head,[0,-0.15,0]) 
+    + quat_transformation(quat_arm,[-0.15,0,0])
     state_dict['Apx'],state_dict['Apy'],state_dict['Apz'] = pos_arm
     if data_forearm is not None:
-        quat_forearm = quat_conjugate(quat_observation([1, 0, 0, 0],[data_forearm['ax'][0],data_forearm['ay'][0],data_forearm['az'][0]], [data_forearm['mx'][0],data_forearm['my'][0],data_forearm['mz'][0]],mua=1))
+        quat_forearm = quat_conjugate(quat_observation([1, 0, 0, 0],
+                            [data_forearm['ax'][0],data_forearm['ay'][0],data_forearm['az'][0]],
+                            [data_forearm['mx'][0],data_forearm['my'][0],data_forearm['mz'][0]],mua=1))
     else:
         quat_forearm = quat_head
     state_dict['Fq0'],state_dict['Fq1'],state_dict['Fq2'],state_dict['Fq3'] = quat_forearm
-    state_dict['Fpx'],state_dict['Fpy'],state_dict['Fpz'] = pos_arm + quat_transformation(quat_arm,[-0.15,0,0]) + quat_transformation(quat_forearm,[-0.15,0,0])
+    state_dict['Fpx'],state_dict['Fpy'],state_dict['Fpz'] = pos_arm 
+    + quat_transformation(quat_arm,[-0.15,0,0]) + quat_transformation(quat_forearm,[-0.15,0,0])
 
     return state_dict,ntoid,idtoname
 ######################################################################################################
@@ -642,7 +799,7 @@ def state_to_state_dict(state):
     """state is the state of the system
     returns a dictionary mapping the name of the state to its value
     """
-    names=['Hq0','Hq1','Hq2','Hq3','Hpx','Hpy','Hpz','vHpx','vHpy','vHpz','aHpx','aHpy','aHpz','gHpx','gHpy','gHpz']
+    names=['Hq0','Hq1','Hq2','Hq3','Hpx','Hpy','Hpz','h_vx','h_vy','h_vz','h_ax','h_ay','h_az','h_gx','h_gy','h_gz']
     state_names_body=['Bq0','Bq1','Bq2','Bq3','Bpx','Bpy','Bpz','gBpx','gBpy','gBpz']
     state_names_arm=['Aq0','Aq1','Aq2','Aq3','Apx','Apy','Apz','gApx','gApy','gApz']
     state_names_forearm=['Fq0','Fq1','Fq2','Fq3','Fpx','Fpy','Fpz','gFpx','gFpy','gFpz']
