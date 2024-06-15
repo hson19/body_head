@@ -504,8 +504,8 @@ def kalman_filtering(file):
     filter.x=state
     results=[]
 
-    # JF=jacobian_state_transition_matrix(state,dt)
-    JF = np.eye(len(state))*0.001
+    JF=jacobian_state_transition_matrix(state,dt)
+    # JF = np.eye(len(state))*0.001
     len_head=len(data_head.data) if data_head.data is not None else 0
     len_body=len(data_body.data) if data_body.data is not None else 0
     len_arm=len(data_arm.data) if data_arm.data is not None else 0
@@ -517,8 +517,8 @@ def kalman_filtering(file):
         current_time=sensor.data['time'][sensor.i]
         dt= (current_time-last_time)/1000
 
-        # JF=jacobian_state_transition_matrix(state,dt)
-        JF = np.eye(len(state))*0.1
+        JF=jacobian_state_transition_matrix(state,dt)
+        # JF = np.eye(len(state))*0.1
 
         filter.F=JF
         state_dict,ntoid,idton=state_to_state_dict(filter.x)
@@ -873,6 +873,6 @@ for result in results:
     f.write("\n")
 f.close()
 
-from Visualisation import LiveAnimeation
-LiveAnimeation(file+"/result.csv",ntoid,DEBUG=True,Body=True,Head=True,Arm=True,Forearm=True)
+from Visualisation import live_animation
+live_animation(file+"/result.csv",ntoid,DEBUG=True,body=True,head=True,arm=True,forearm=True)
 
