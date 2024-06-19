@@ -7,14 +7,16 @@
 -export([start/2]).
 -export([stop/1,stop_all/0]).
 -export([launch/0,launch_all/0]).
+-export([launch_e4/0,launch_e4_all/0]).
 -export([set_args/1]).
 
 %--- API -----------------------------------------------------------------------
 set_args(nav3) ->
     Cn = nav3:calibrate(),
-    R0 = e2:calibrate(element(3, Cn)),
+    R0 = e4:calibrate(element(3, Cn)),
+    % R0 = e3:calibrate(),
     update_table({{nav3, node()}, Cn}),
-    update_table({{e2, node()}, R0}).
+    update_table({{e4, node()}, R0}).
 
 launch() ->
     try launch(node_type()) of
@@ -26,10 +28,21 @@ launch() ->
             [grisp_led:color(L, red) || L <- [1, 2]],
             {error, badarg}
     end.
+launch_e4() ->
+    try launch_e4(node_type()) of
+        ok ->
+            [grisp_led:color(L, green) || L <- [1, 2]],
+            ok
+    catch
+        error:badarg ->
+            [grisp_led:color(L, red) || L <- [1, 2]],
+            {error, badarg}
+    end.
 
 launch_all() ->
     rpc:multicall(?MODULE, launch, []).
-
+launch_e4_all() ->
+    rpc:multicall(?MODULE, launch_e4, []).
 stop_all() ->
     _ = rpc:multicall(application, stop, [hera]),
     _ = rpc:multicall(application, start, [hera]),
@@ -62,13 +75,20 @@ stop(_State) ->
 %--- Internal functions ---------------------------------------------------------
 launch(bodypart) ->
     Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
-    R0 = ets:lookup_element(args, {e2, node()}, 2),
+    R0 = ets:lookup_element(args, {e4, node()}, 2),
     {ok,_} = hera:start_measure(nav3,Cn),
-    {ok,_} = hera:start_measure(e2,R0),
+    {ok,_} = hera:start_measure(e4,R0),
     ok;
 launch(_) ->
     ok.
-
+launch_e4(bodypart) ->
+    Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
+    R0 = ets:lookup_element(args, {e4, node()}, 2),
+    {ok,_} = hera:start_measure(nav3,Cn),
+    {ok,_} = hera:start_measure(e4,R0),
+    ok;
+launch_e4(_) ->
+    ok.
 init_table() ->
     args = ets:new(args, [public, named_table]), % public means any process can read or write the table
     {ResL,_} = rpc:multicall(nodes(), ets, tab2list, [args]),
