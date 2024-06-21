@@ -80,17 +80,20 @@ measure({State,P0}) ->
     State_dict=state_to_state_dict(State),
     T0=maps:get(time, state_to_state_dict(State)),
     T1 = hera:timestamp(),
-    NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
-    NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],
-    NavArm = [Data || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
-    NavForearm = [Data || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
-    {_,Card}=getNewestSensorData(NavHead,NavBody,NavArm,NavForearm),
+    io:format("DataBOdy: ~p~n", [DataBody]),
+    NavBody = [[Ts|Data] || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
+    NavHead = [[Ts|Data] || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],
+    NavArm = [[Ts|Data] || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
+    NavForearm = [[Ts|Data] || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
+    {Nav_data,Card}=getNewestSensorData(NavHead,NavBody,NavArm,NavForearm),
+    io:format("Nav_data: ~p~n", [Nav_data]),
+    io:format("Card: ~p~n", [Card]),
     State_dict_dt=maps:put(time, (T1-maps:get(time,State_dict))/1000, State_dict), % change the time to dt
     State_prediction=state_dict_to_state(State_dict_dt),
     
     if Card == head ->    
         % ekf({X0, P0}, {F, Jf}, {H, Jh}, Q, R, Z) 
-        {Acc, Gyro, Mag}=process_nav(NavHead),
+        {Acc, Gyro, Mag}=process_nav(Nav_data),
         [Ax,Ay,Az]=Acc,
         [Gx,Gy,Gz]=Gyro,
         Qhead=[[maps:get(hq0, State_dict_dt)], [maps:get(hq1, State_dict_dt)], [maps:get(hq2, State_dict_dt)], [maps:get(hq3, State_dict_dt)]],
@@ -105,44 +108,71 @@ measure({State,P0}) ->
         Z=Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
         Q=mat:eye(46),
         R= mat:eye(10),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_state_measurement/1}, Q,R,Z),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_head_state_measurement/1}, Q,R,Z),
         New_state1=NewState ++ [[T1]],
         Normalized_new_state=normalize_quat_state(New_state1),
         Valpos=Normalized_new_state, 
         {ok,Valpos,{Normalized_new_state,P1}};
     Card == body ->
-        {Acc, Gyro, Mag}=process_nav(NavBody),
-        Qbody=[maps:get(bq0, State_dict_dt), maps:get(bq1, State_dict_dt), maps:get(bq2, State_dict_dt), maps:get(bq3, State_dict_dt)],
-        Z=lists:flatten([observationModel(Qbody,Acc,Mag),Acc,Gyro]),
+        {Acc, Gyro, Mag}=process_nav(Nav_data),
+        [Gx,Gy,Gz]=Gyro,
+        Qbody=[[maps:get(bq0, State_dict_dt)], [maps:get(bq1, State_dict_dt)], [maps:get(bq2, State_dict_dt)], [maps:get(bq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qbody,Acc,Mag),
+        case qdot(ObservedQuat, Qbody) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
         Q=mat:eye(46),
-        R= mat:eye(9),
-        {NewState,P1}=kalman:ekf({State,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_state_measurement/1}, Q,R,Z),
+        R= mat:eye(7),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun body_state_measurement/1,fun jacobian_body_state_measurement/1}, Q,R,Z),
         New_state1=NewState ++ [[T1]],
         Normalized_new_state=normalize_quat_state(New_state1),
         Valpos=Normalized_new_state, 
-        {ok,Valpos,{NewState,P1}};
+        {ok,Valpos,{Normalized_new_state,P1}};
     Card == arm ->
-        {Acc, Gyro, Mag}=process_nav(NavArm),
-        Qarm=[maps:get(aq0, State_dict_dt), maps:get(aq1, State_dict_dt), maps:get(aq2, State_dict_dt), maps:get(aq3, State_dict_dt)],
-        Z=lists:flatten([observationModel(Qarm,Acc,Mag),Acc,Gyro]),
+        {Acc, Gyro, Mag}=process_nav(Nav_data),
+        [Gx,Gy,Gz]=Gyro,        
+        Qarm=[[maps:get(aq0, State_dict_dt)], [maps:get(aq1, State_dict_dt)], [maps:get(aq2, State_dict_dt)], [maps:get(aq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qarm,Acc,Mag),
+        case qdot(ObservedQuat, Qarm) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
         Q=mat:eye(46),
-        R= mat:eye(9),
-        {NewState,P1}=kalman:ekf({State,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_state_measurement/1}, Q,R,Z),
+        R= mat:eye(7),
+        io:format("Z: ~p~n", [Z]),
+        io:format("State: ~p~n", [State]),
+        io:format("arm_state_measurement: ~p~n", [arm_state_measurement(State)]),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun arm_state_measurement/1,fun jacobian_arm_state_measurement/1}, Q,R,Z),
         New_state1=NewState ++ [[T1]],
         Normalized_new_state=normalize_quat_state(New_state1),
         Valpos=Normalized_new_state,     
-        {ok,Valpos,{NewState,P1}};
+        {ok,Valpos,{Normalized_new_state,P1}};
     Card == forearm ->
-        {Acc, Gyro, Mag}=process_nav(NavForearm),
-        Qforearm=[maps:get(fq0, State_dict_dt), maps:get(fq1, State_dict_dt), maps:get(fq2, State_dict_dt), maps:get(fq3, State_dict_dt)],
-        Z=lists:flatten([observationModel(Qforearm,Acc,Mag),Acc,Gyro]),
+        {Acc, Gyro, Mag}=process_nav(Nav_data),
+        [Gx,Gy,Gz]=Gyro,        
+        Qforearm=[[maps:get(fq0, State_dict_dt)], [maps:get(fq1, State_dict_dt)], [maps:get(fq2, State_dict_dt)], [maps:get(fq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qforearm,Acc,Mag),
+        case qdot(ObservedQuat, Qforearm) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
         Q=mat:eye(46),
-        R= mat:eye(9),
-        {NewState,P1}=kalman:ekf({State,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_state_measurement/1}, Q,R,Z),
+        R= mat:eye(7),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun forearm_state_measurement/1,fun jacobian_forearm_state_measurement/1}, Q,R,Z),
         New_state1=NewState ++ [[T1]],
         Normalized_new_state=normalize_quat_state(New_state1),
         Valpos=Normalized_new_state,     
-        {ok,Valpos,{NewState,P1}};
+        {ok,Valpos,{Normalized_new_state,P1}};
     true ->
         {undefined, {State,P0}}
     end.
@@ -157,30 +187,33 @@ getNewestSensorData([], [], [], []) ->
     io:format("All data lists are empty~n"),
     {[], none};
 getNewestSensorData(Head_data, Body_data, Arm_data, Forearm_data) ->
-    DataLists = [Head_data, Body_data, Arm_data, Forearm_data],
+    DataLists = [[head]++Head_data, [body]++Body_data, [arm]++Arm_data, [forearm]++Forearm_data],
     % Ensure each list has at least one element and the first element is a number (T1)
     ValidDataLists = lists:filter(fun
-        (Data) when is_list(Data), length(Data) > 0-> true;
+        (Data) when is_list(Data), length(Data) > 1-> true;
         (_) -> false
     end, DataLists),
-
+    io:format("ValidDataLists: ~p~n", [ValidDataLists]),
     case ValidDataLists of
         [] ->
             io:format("All data lists are empty or invalid~n"),
             {[], none};
         _ ->
             % Convert lists to tuples {T1, Data}
-            Tuples = lists:map(fun([T1 | Rest]) -> {T1, Rest} end, ValidDataLists),
-            
+            Tuples = lists:map(fun([Card |[[T1 | Rest]]]) -> {T1, Rest,Card} end, ValidDataLists),
+            io:format("Tuples: ~p~n", [Tuples]),
             % Find the tuple with the smallest T1
-            MinTuple = lists:min(Tuples),
-            
+            MinTuple = lists:max(Tuples),
+            io:format("MinTuple: ~p~n", [MinTuple]),
+            io:format("Head_data: ~p~n", [Head_data]),
+
             % Match MinTuple to the corresponding data and return
             case MinTuple of
-                {T1, _} when MinTuple == {hd(Head_data), tl(Head_data)} -> {Head_data, head};
-                {T1, _} when MinTuple == {hd(Body_data), tl(Body_data)} -> {Body_data, body};
-                {T1, _} when MinTuple == {hd(Arm_data), tl(Arm_data)} -> {Arm_data, arm};
-                {T1, _} when MinTuple == {hd(Forearm_data), tl(Forearm_data)} -> {Forearm_data, forearm}
+            {T1, Data, Card} when Card == head -> {Data, head};
+            {T1, Data, Card} when Card == body -> {Data, body};
+            {T1, Data, Card} when Card == arm -> {Data, arm};
+            {T1, Data, Card} when Card == forearm -> {Data, forearm};
+            {T1, Data, Card} -> {Data, none}
             end
     end.
 
@@ -216,6 +249,9 @@ state_prediction(State)->
     {ok,New_body_quat} = kalman_quaternion_predict(Body_g, Dt, Body_quat, mat:eye(4)),
     New_body_pos = mat:'+'(quatTransfomation(Head_quat,[[0],[-?BODYHEADDISTANCE],[0]]),Head_pos),
     % Arm prediction
+    io:format("Arm_g: ~p~n", [Arm_g]),
+    io:format("Arm_quat: ~p~n", [Arm_quat]),
+    io:format("Dt: ~p~n", [Dt]),
     {ok,New_arm_quat} = kalman_quaternion_predict(Arm_g, Dt, Arm_quat, mat:eye(4)),
     Shoulder_pos = mat:'+'(quatTransfomation(Head_quat,[[0],[-?HEADSHOULDERDISTANCE],[0]]),Head_pos),
     Shoulder_to_biceps = quatTransfomation(Arm_quat,[[0],[-?SHOULDERBICEPSDISTANCE],[0]]),
@@ -235,11 +271,11 @@ state_prediction(State)->
 jacobian_state_prediction(_) ->
     mat:eye(46).
 head_state_measurement(State)-> 
-    H=jacobian_state_measurement(State),
+    H=jacobian_head_state_measurement(State),
     State_without_time=lists:sublist(State,46),
     Result=mat:'*'(H,State_without_time),
     Result.
-jacobian_state_measurement(State) ->
+jacobian_head_state_measurement(State) ->
       H=[ create_list_with_one_at(0,46),
         create_list_with_one_at(1,46),
         create_list_with_one_at(2,46),
@@ -252,6 +288,52 @@ jacobian_state_measurement(State) ->
         create_list_with_one_at(15,46)
     ],
     H.  
+body_state_measurement(State) ->
+    H=jacobian_body_state_measurement(State),
+    State_without_time=lists:sublist(State,46),
+    Result=mat:'*'(H,State_without_time),
+    Result.
+jacobian_body_state_measurement(State) ->
+    H=[ create_list_with_one_at(16,46),
+        create_list_with_one_at(17,46),
+        create_list_with_one_at(18,46),
+        create_list_with_one_at(19,46),
+        create_list_with_one_at(23,46),
+        create_list_with_one_at(24,46),
+        create_list_with_one_at(25,46)
+    ],
+    H.
+arm_state_measurement(State) ->
+    H=jacobian_arm_state_measurement(State),
+    State_without_time=lists:sublist(State,46),
+    Result=mat:'*'(H,State_without_time),
+    Result.
+jacobian_arm_state_measurement(State) ->
+    H=[ create_list_with_one_at(26,46),
+        create_list_with_one_at(27,46),
+        create_list_with_one_at(28,46),
+        create_list_with_one_at(29,46),
+        create_list_with_one_at(33,46),
+        create_list_with_one_at(34,46),
+        create_list_with_one_at(35,46)
+    ],
+    H.
+
+forearm_state_measurement(State) ->
+    H=jacobian_forearm_state_measurement(State),
+    State_without_time=lists:sublist(State,46),
+    Result=mat:'*'(H,State_without_time),
+    Result.
+jacobian_forearm_state_measurement(State) ->
+    H=[ create_list_with_one_at(36,46),
+        create_list_with_one_at(37,46),
+        create_list_with_one_at(38,46),
+        create_list_with_one_at(39,46),
+        create_list_with_one_at(43,46),
+        create_list_with_one_at(44,46),
+        create_list_with_one_at(45,46)
+    ],
+    H.
 kalman_quaternion_predict(Gyro,Dt,Quat,P0) ->
     Conj_quat = conjugateQuaternion(Quat),
     [[Wx],[Wy],[Wz]] = Gyro,
@@ -298,7 +380,8 @@ consttimesVector(C, [X,Y,Z]) ->
     [C*X, C*Y, C*Z].
 process_nav([]) -> 
     {[],[],[],[]};
-process_nav([Nav]) ->
+process_nav(Nav) ->
+    io:format("Nav: ~p~n", [Nav]),
     {Acc, Next} = lists:split(3, Nav),
     {Gyro, Mag} = lists:split(3, Next),
     {Acc, Gyro, Mag}. 
