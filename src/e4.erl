@@ -81,101 +81,23 @@ measure({State,P0}) ->
     T0=maps:get(time, state_to_state_dict(State)),
     T1 = hera:timestamp(),
     io:format("DataBOdy: ~p~n", [DataBody]),
-    NavBody = [[Ts|Data] || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
-    NavHead = [[Ts|Data] || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],
-    NavArm = [[Ts|Data] || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
-    NavForearm = [[Ts|Data] || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
-    {Nav_data,Card}=getNewestSensorData(NavHead,NavBody,NavArm,NavForearm),
-    io:format("Nav_data: ~p~n", [Nav_data]),
-    io:format("Card: ~p~n", [Card]),
-    State_dict_dt=maps:put(time, (T1-maps:get(time,State_dict))/1000, State_dict), % change the time to dt
+    NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],    
+    NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
+    NavArm = [Data || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
+    NavForearm = [Data || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
+    Dt= (T1-maps:get(time,State_dict))/1000,
+    State_dict_dt=maps:put(time, Dt, State_dict), % change the time to dt
     State_prediction=state_dict_to_state(State_dict_dt),
-    
-    if Card == head ->    
-        % ekf({X0, P0}, {F, Jf}, {H, Jh}, Q, R, Z) 
-        {Acc, Gyro, Mag}=process_nav(Nav_data),
-        [Ax,Ay,Az]=Acc,
-        [Gx,Gy,Gz]=Gyro,
-        Qhead=[[maps:get(hq0, State_dict_dt)], [maps:get(hq1, State_dict_dt)], [maps:get(hq2, State_dict_dt)], [maps:get(hq3, State_dict_dt)]],
-        ObservedQuat=observationModel(Qhead,Acc,Mag),
-        
-        case qdot(ObservedQuat, Qhead) > 0 of
-        true ->
-            Qc= ObservedQuat;
-        false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
-        end,
-        Z=Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(10),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun head_state_measurement/1,fun jacobian_head_state_measurement/1}, Q,R,Z),
-        New_state1=NewState ++ [[T1]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        Valpos=Normalized_new_state, 
-        {ok,Valpos,{Normalized_new_state,P1}};
-    Card == body ->
-        {Acc, Gyro, Mag}=process_nav(Nav_data),
-        [Gx,Gy,Gz]=Gyro,
-        Qbody=[[maps:get(bq0, State_dict_dt)], [maps:get(bq1, State_dict_dt)], [maps:get(bq2, State_dict_dt)], [maps:get(bq3, State_dict_dt)]],
-        ObservedQuat=observationModel(Qbody,Acc,Mag),
-        case qdot(ObservedQuat, Qbody) > 0 of
-        true ->
-            Qc= ObservedQuat;
-        false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
-        end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun body_state_measurement/1,fun jacobian_body_state_measurement/1}, Q,R,Z),
-        New_state1=NewState ++ [[T1]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        Valpos=Normalized_new_state, 
-        {ok,Valpos,{Normalized_new_state,P1}};
-    Card == arm ->
-        {Acc, Gyro, Mag}=process_nav(Nav_data),
-        [Gx,Gy,Gz]=Gyro,        
-        Qarm=[[maps:get(aq0, State_dict_dt)], [maps:get(aq1, State_dict_dt)], [maps:get(aq2, State_dict_dt)], [maps:get(aq3, State_dict_dt)]],
-        ObservedQuat=observationModel(Qarm,Acc,Mag),
-        case qdot(ObservedQuat, Qarm) > 0 of
-        true ->
-            Qc= ObservedQuat;
-        false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
-        end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        io:format("Z: ~p~n", [Z]),
-        io:format("State: ~p~n", [State]),
-        io:format("arm_state_measurement: ~p~n", [arm_state_measurement(State)]),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun arm_state_measurement/1,fun jacobian_arm_state_measurement/1}, Q,R,Z),
-        New_state1=NewState ++ [[T1]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        Valpos=Normalized_new_state,     
-        {ok,Valpos,{Normalized_new_state,P1}};
-    Card == forearm ->
-        {Acc, Gyro, Mag}=process_nav(Nav_data),
-        [Gx,Gy,Gz]=Gyro,        
-        Qforearm=[[maps:get(fq0, State_dict_dt)], [maps:get(fq1, State_dict_dt)], [maps:get(fq2, State_dict_dt)], [maps:get(fq3, State_dict_dt)]],
-        ObservedQuat=observationModel(Qforearm,Acc,Mag),
-        case qdot(ObservedQuat, Qforearm) > 0 of
-        true ->
-            Qc= ObservedQuat;
-        false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
-        end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun forearm_state_measurement/1,fun jacobian_forearm_state_measurement/1}, Q,R,Z),
-        New_state1=NewState ++ [[T1]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        Valpos=Normalized_new_state,     
-        {ok,Valpos,{Normalized_new_state,P1}};
-    true ->
-        {undefined, {State,P0}}
-    end.
+    {New_state,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun state_measurement/1,fun jacobian_state_measurement/1}, mat:eye(46),mat:eye(46),lists:sublist(State_prediction,46)),
+    New_state_time=New_state++[[T1]],
+    New_state_dict=state_to_state_dict(New_state_time),
+    New_state_dict_dt=maps:put(time, T1, New_state_dict),
+    {Head_measured,P1head}=measurement_head(P1,NavHead,New_state_dict_dt),
+    {Body_measured,P1body}=measurement_body(P1head,NavBody,state_to_state_dict(Head_measured)),
+    {Arm_measured,P1arm}=measurement_arm(P1body,NavArm,state_to_state_dict(Body_measured)),
+    {Forearm_measured,P1forearm}=measurement_forearm(P1arm,NavForearm,state_to_state_dict(Arm_measured)),
+    Final_state=lists:sublist(Forearm_measured,46)++[[T1]],
+    {ok,Final_state,{Final_state,P1forearm}}.
     
 
             
@@ -270,6 +192,14 @@ state_prediction(State)->
 
 jacobian_state_prediction(_) ->
     mat:eye(46).
+state_measurement(State) ->
+    H=jacobian_state_measurement(State),
+    State_without_time=lists:sublist(State,46),
+    Result=mat:'*'(H,State_without_time),
+    Result.
+jacobian_state_measurement(State) ->
+    H=mat:eye(46),
+    H.
 head_state_measurement(State)-> 
     H=jacobian_head_state_measurement(State),
     State_without_time=lists:sublist(State,46),
@@ -368,8 +298,112 @@ kalman_position_predict(Dt,Quat,[[X],[Y],[Z]],[[Vx],[Vy],[Vz]],Acc,P0) ->
     Q = mat:diag([?VAR_P,?VAR_P,?VAR_AL, ?VAR_P,?VAR_P,?VAR_AL, ?VAR_P,?VAR_P,?VAR_AL]),
     {[[New_x],[New_vx],[New_ax],[New_y],[New_vy],[New_ay],[New_z],[New_vz],[New_az]], _} = kalman:kf_predict({State,P0}, F, Q),
     {ok, [[New_x],[New_y],[New_z]],[[New_vx],[New_vy],[New_vz]],[[New_ax],[New_ay],[New_az]]}.
-    
-       
+identity_prediction(State) ->
+    lists:sublist(State,46).
+jacobian_identity_prediction(State) ->
+    mat:eye(46).
+measurement_head(P0,Nav_data,State_dict_dt) ->   
+    State_prediction=state_dict_to_state(State_dict_dt),
+    io:format("Head_nav_data: ~p~n", [Nav_data]),
+    io:format("length: ~p~n", [length(Nav_data)]),
+    if length(Nav_data) == 0 -> 
+        {State_prediction,P0};
+    true ->
+        {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
+        [Ax,Ay,Az]=Acc,
+        [Gx,Gy,Gz]=Gyro,
+        Qhead=[[maps:get(hq0, State_dict_dt)], [maps:get(hq1, State_dict_dt)], [maps:get(hq2, State_dict_dt)], [maps:get(hq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qhead,Acc,Mag),
+        
+        case qdot(ObservedQuat, Qhead) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
+        Q=mat:eye(46),
+        R= mat:eye(10),
+        io:format("Z: ~p~n", [Z]),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun head_state_measurement/1,fun jacobian_head_state_measurement/1}, Q,R,Z),
+        Dt=maps:get(time,State_dict_dt),
+        New_state1=NewState ++ [[Dt]],
+        Normalized_new_state=normalize_quat_state(New_state1),
+    {Normalized_new_state,P1}
+    end.
+measurement_body(P0,Nav_data,State_dict_dt) ->
+    State_prediction=state_dict_to_state(State_dict_dt),
+    if length(Nav_data) == 0 -> 
+        {State_prediction,P0};
+    true ->
+        {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
+        [Gx,Gy,Gz]=Gyro,
+        Qbody=[[maps:get(bq0, State_dict_dt)], [maps:get(bq1, State_dict_dt)], [maps:get(bq2, State_dict_dt)], [maps:get(bq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qbody,Acc,Mag),
+        case qdot(ObservedQuat, Qbody) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
+        Q=mat:eye(46),
+        R= mat:eye(7),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun body_state_measurement/1,fun jacobian_body_state_measurement/1}, Q,R,Z),
+        Dt=maps:get(time,State_dict_dt),
+        New_state1=NewState ++ [[Dt]],
+        Normalized_new_state=normalize_quat_state(New_state1),
+        {Normalized_new_state,P1}
+    end.   
+measurement_arm(P0,Nav_data,State_dict_dt) ->
+    State_prediction=state_dict_to_state(State_dict_dt),
+    if length(Nav_data) == 0 -> 
+        {State_prediction,P0};
+    true ->
+        {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
+        [Gx,Gy,Gz]=Gyro,
+        Qarm=[[maps:get(aq0, State_dict_dt)], [maps:get(aq1, State_dict_dt)], [maps:get(aq2, State_dict_dt)], [maps:get(aq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qarm,Acc,Mag),
+        case qdot(ObservedQuat, Qarm) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
+        Q=mat:eye(46),
+        R= mat:eye(7),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun arm_state_measurement/1,fun jacobian_arm_state_measurement/1}, Q,R,Z),
+        Dt=maps:get(time,State_dict_dt),
+        New_state1=NewState ++ [[Dt]],
+        Normalized_new_state=normalize_quat_state(New_state1),
+        {Normalized_new_state,P1}
+    end.
+measurement_forearm(P0,Nav_data,State_dict_dt) ->
+    State_prediction=state_dict_to_state(State_dict_dt),
+    if length(Nav_data) == 0 -> 
+        {State_prediction,P0};
+    true ->
+        {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
+        [Gx,Gy,Gz]=Gyro,        
+        Qforearm=[[maps:get(fq0, State_dict_dt)], [maps:get(fq1, State_dict_dt)], [maps:get(fq2, State_dict_dt)], [maps:get(fq3, State_dict_dt)]],
+        ObservedQuat=observationModel(Qforearm,Acc,Mag),
+        case qdot(ObservedQuat, Qforearm) > 0 of
+        true ->
+            Qc= ObservedQuat;
+        false ->
+            Qc= mat:'*'(-1,ObservedQuat)            
+        end,
+        Z=Qc++[[Gx],[Gy],[Gz]],
+        Q=mat:eye(46),
+        R= mat:eye(7),
+        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun forearm_state_measurement/1,fun jacobian_forearm_state_measurement/1}, Q,R,Z),
+        Dt=maps:get(time,State_dict_dt),
+        New_state1=NewState ++ [[Dt]],
+        Normalized_new_state=normalize_quat_state(New_state1),    
+        {Normalized_new_state,P1}
+    end.
+
 qdot([[Q11], [Q12], [Q13], [Q14]], [[Q21], [Q22], [Q23], [Q24]]) ->
     Q11*Q21 + Q12*Q22 + Q13*Q23 + Q14*Q24.
 dot([[X1],[X2],[X3]], [[Y1],[Y2],[Y3]]) ->
