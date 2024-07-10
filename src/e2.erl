@@ -4,6 +4,7 @@
 
 -export([calibrate/1]).
 -export([init/1, measure/1]).
+-export([observationModel/4]).
 
 -define(VAR_Q, 0.001).
 -define(VAR_R, 0.01).
@@ -13,8 +14,8 @@
 -define(VAR_AL, 0.1).
 -define(VAR_AZ, 0.1).
 -define(Debug_info, true).
--define(BodyHeadDistance, -0.30).
--define(HeadArmDistance, 0.15).
+-define(BodyHeadDistance, 0.30).
+-define(HeadArmDistance, 0.25).
 -define(ArmCenterBiceps, 0.15).
 -define(BicepsElbow, 0.15).
 -define(ElbowWrist, 0.15).
@@ -41,16 +42,6 @@ init(R0) ->
         timeout => 10
     },
     T0 = hera:timestamp(),
-    BodyPos = [
-        [0],[0],[0], % Position Body
-        [?BodyHeadDistance],[0],[0], % V BOdy
-        [0],[0],[0]], % Acc Body
-    BodyPpos = mat:eye(9),
-    BodyOr= dcm2quat(R0),
-
-    BodyPor = mat:diag([10,10,10,10]),
-    BodyXpos = {T0,BodyPos, BodyPpos, BodyOr, BodyPor, R0},
-
     HeadPos=[[0],[0],[0], % Position Head
         [0],[0],[0], % V Head
         [0],[0],[0]], % Acc Head
@@ -60,17 +51,34 @@ init(R0) ->
     HeadPor = mat:diag([10,10,10,10]),
     HeadXpos = {T0,HeadPos, HeadPpos, HeadOr, HeadPor, R0},
 
-    ArmPos=[[-?ArmCenterBiceps],[0],[0], % Position LeftArm
-        [-?HeadArmDistance],[0],[0], % V LeftArm
-        [0],[0],[0]], % Acc LeftArm
+    
+    BodyPosition = quatTransfomation(HeadOr,[[0],[-?BodyHeadDistance],[0],[0]]),
+    [[_],[Bodyx],[Bodyy],[Bodyz]]=BodyPosition,
+    BodyPos = [
+        [Bodyx],[0],[0], % Position Body
+        [Bodyy],[0],[0], % V BOdy
+        [Bodyz],[0],[0]], % Acc Body
+    BodyPpos = mat:eye(9),
+    BodyOr= dcm2quat(R0),
+
+    BodyPor = mat:diag([10,10,10,10]),
+    BodyXpos = {T0,BodyPos, BodyPpos, BodyOr, BodyPor, R0},
+
+    ArmPosition = quatTransfomation(HeadOr,[[0],[-?HeadArmDistance],[-?ArmCenterBiceps],[0]]),
+    [[_],[Armx],[Army],[Armz]]=ArmPosition,
+    ArmPos=[[Armx],[0],[0], % Position LeftArm
+        [Army],[0],[0], % V LeftArm
+        [Armz],[0],[0]], % Acc LeftArm
     ArmPpos = mat:eye(9),
     ArmOr= dcm2quat(R0),
     ArmPor = mat:diag([10,10,10,10]),
     ArmXpos = {T0,ArmPos, ArmPpos, ArmOr, ArmPor, R0},
-
-    ForearmPos=[[-?ArmCenterBiceps-?BicepsElbow-?ElbowWrist],[0],[0], % Position Forearm
-        [-?HeadArmDistance],[0],[0], % V Forearm
-        [0],[0],[0]], % Acc Forearm
+    
+    ForearmPosition= quatTransfomation(HeadOr,[[0],[-?HeadArmDistance],[-?ArmCenterBiceps-?BicepsElbow],[0]]),
+    [[_],[Forearmx],[Forearmy],[Forearmz]]=ForearmPosition,
+    ForearmPos=[[Forearmx],[0],[0], % Position Forearm
+        [Forearmy],[0],[0], % V Forearm
+        [Forearmz],[0],[0]], % Acc Forearm
     ForearmPpos = mat:eye(9),
     ForearmOr= dcm2quat(R0),
     ForearmPor = mat:diag([10,10,10,10]),
@@ -97,6 +105,7 @@ measure({HeadXpos,BodyXpos,ArmXpos,ForearmXpos}) ->
     NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0Head < Ts, T1-Ts < 500],
     NavArm = [Data || {_,_,Ts,Data} <- DataArm, T0Arm < Ts, T1-Ts < 500],
     NavForearm = [Data || {_,_,Ts,Data} <- Dataforearm, T0Forearm < Ts, T1-Ts < 500],
+    {AccHead,_,_,Mag}= process_nav(NavHead,HeadR0),
     if
         length(NavHead) == 0 -> % no measure
             UpdatedHeadXpos=HeadXpos,
@@ -116,7 +125,7 @@ measure({HeadXpos,BodyXpos,ArmXpos,ForearmXpos}) ->
             end;
     
         true ->
-            io:format("Datat from NavBody"),
+            io:format("Data from NavBody"),
             {ok,BodyValpos,UpdatedBodyXpos}=sensorUpdate(NavBody,T1, BodyPos, BodyPpos, BodyOr, BodyPor, BodyR0,(T1-T0Body)/1000,body)
     end,
     if
@@ -141,20 +150,23 @@ measure({HeadXpos,BodyXpos,ArmXpos,ForearmXpos}) ->
     end,
     
    % start applying the constraint Hierachical Model 
-    if ((length(NavHead) > 0) orelse (length(NavHead) > 0) ) ->
+    if ((length(NavHead) > 0) orelse (length(NavBody) > 0) ) ->
         {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintHeadValPos,ConstraintBodyValPos}=bodyHeadConstraint(UpdatedBodyXpos,UpdatedHeadXpos,HeadValpos,BodyValpos),
         {ConstraintArmXpos,ConstraintArmValpos}=headArmConstraint(ConstraintHeadXpos,UpdatedArmXpos,right),
         {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(ConstraintArmXpos,UpdatedForearmXpos),
-        Valpos = lists:append([[T1],ConstraintHeadValPos,ConstraintBodyValPos,ConstraintArmValpos,ConstraintForearmValpos]),
+        Valpos = lists:append([[T1],ConstraintHeadValPos,ConstraintBodyValPos,ConstraintArmValpos,ConstraintForearmValpos,AccHead,Mag]),
+        io:format("TimeHead ~p~n",[hera:timestamp()-T1]),
         {ok,Valpos, {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintArmXpos,ConstraintForearmXpos}};
     length(NavArm) > 0 ->
         {ConstraintArmXpos,ConstraintArmValpos}=headArmConstraint(UpdatedHeadXpos,UpdatedArmXpos,right),
         {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(ConstraintArmXpos,UpdatedForearmXpos),
-        Valpos = lists:append([[T1],HeadValpos,BodyValpos,ConstraintArmValpos,ConstraintForearmValpos]),
+        Valpos = lists:append([[T1],HeadValpos,BodyValpos,ConstraintArmValpos,ConstraintForearmValpos,AccHead,Mag]),
+        io:format("TimeArm ~p~n",[hera:timestamp()-T1]),
         {ok,Valpos, {UpdatedHeadXpos, UpdatedBodyXpos, ConstraintArmXpos,ConstraintForearmXpos}};
     length(NavForearm) > 0 ->
         {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(UpdatedArmXpos,UpdatedForearmXpos),
-        Valpos = lists:append([[T1],HeadValpos,BodyValpos,ArmValpos,ConstraintForearmValpos]),
+        Valpos = lists:append([[T1],HeadValpos,BodyValpos,ArmValpos,ConstraintForearmValpos,AccHead,Mag]),
+        io:format("TimeForearm ~p~n",[hera:timestamp()-T1]),
         {ok,Valpos, {UpdatedHeadXpos, UpdatedBodyXpos, UpdatedArmXpos,ConstraintForearmXpos}};
     true -> {undefined, {UpdatedHeadXpos, UpdatedBodyXpos, UpdatedArmXpos, UpdatedForearmXpos}}
     end.
@@ -445,7 +457,7 @@ headArmConstraint(HeadState,ArmState,Arm)->
     ArmCenterPos= mat:'+'([[HeadX],[HeadY],[HeadZ]],HeadCenterDistanceVectorG),
     
     %Get the direction of the arm
-    Y=[[0],[0],[-?ArmCenterBiceps],[0]],
+    Y=[[0],[-?ArmCenterBiceps],[0],[0]],
     YG= fromQuaternionTo3D(quatTransfomation(ArmOr,Y)),
     %Get the arm position
     ArmMeasurementPos= mat:'+'(ArmCenterPos, YG),
@@ -464,13 +476,13 @@ headArmConstraint(HeadState,ArmState,Arm)->
     {{T1Arm,ArmMeasurementPosUpdated,ArmeasurementPpos,ArmOr,ArmPor,ArmR0},ArmValpos}.
 armForearmConstraint({_,ArmXpos,_,ArmOr,_,_},{T1Forearm,ForearmXpos,ForearmPpos,ForearmOr,ForearmPor,ForearmR0}) ->
     [[ArmX],[_],[_],[ArmY],[_],[_],[ArmZ],[_],[_]]=ArmXpos,
-    BicpesToElbow= [[0],[0],[-?BicepsElbow],[0]],
+    BicpesToElbow= [[0],[-?BicepsElbow],[0],[0]],
     BicpesToElbowG= quatTransfomation(ArmOr,BicpesToElbow),
   
     ElbowPos= mat:'+'([[ArmX],[ArmY],[ArmZ]],fromQuaternionTo3D(BicpesToElbowG)),
 
     %Get direction of the forearm
-    Y=[[0],[0],[-?ElbowWrist],[0]],
+    Y=[[0],[-?ElbowWrist],[0],[0]],
     YG= fromQuaternionTo3D(quatTransfomation(ForearmOr,Y)),
 
     WristPos= mat:'+'(ElbowPos, YG),

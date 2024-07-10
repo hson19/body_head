@@ -5,6 +5,10 @@
 -export([calibrate/1]).
 -export([init/1, measure/1]).
 -export([observationModel/3]).
+-export([jacobian_state_prediction/1]).
+-export([state_prediction/1]).
+-export([ekf_predict/3]).
+-export([ekf_update/4]).
 
 -define(VAR_Q, 0.001).
 -define(VAR_R, 0.01).
@@ -46,7 +50,7 @@ init(R0) ->
     Spec = #{
         name => ?MODULE,
         iter => infinity,
-        timeout => 10
+        timeout => 100
     },
     T0 = hera:timestamp(),
     Head_pos=[[0],[0],[0]], % Position Head
@@ -80,24 +84,38 @@ measure({State,P0}) ->
     State_dict=state_to_state_dict(State),
     T0=maps:get(time, state_to_state_dict(State)),
     T1 = hera:timestamp(),
-    io:format("DataBOdy: ~p~n", [DataBody]),
     NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],    
     NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
     NavArm = [Data || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
     NavForearm = [Data || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
+    if length(NavHead) == 0 andalso length(NavBody) == 0 andalso length(NavArm) == 0 andalso length(NavForearm) == 0 -> 
+        {undefined, {State, P0}};
+    true ->
     Dt= (T1-maps:get(time,State_dict))/1000,
     State_dict_dt=maps:put(time, Dt, State_dict), % change the time to dt
     State_prediction=state_dict_to_state(State_dict_dt),
-    {New_state,P1}=kalman:ekf({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1},{fun state_measurement/1,fun jacobian_state_measurement/1}, mat:eye(46),mat:eye(46),lists:sublist(State_prediction,46)),
+    StartPrediction=hera:timestamp(),
+    {New_state,P1}=ekf_predict({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1}, mat:eye(46)),
+    EndPrediction=hera:timestamp(),
+    Dt_prediction=EndPrediction-StartPrediction,
+
     New_state_time=New_state++[[T1]],
     New_state_dict=state_to_state_dict(New_state_time),
-    New_state_dict_dt=maps:put(time, T1, New_state_dict),
-    {Head_measured,P1head}=measurement_head(P1,NavHead,New_state_dict_dt),
-    {Body_measured,P1body}=measurement_body(P1head,NavBody,state_to_state_dict(Head_measured)),
-    {Arm_measured,P1arm}=measurement_arm(P1body,NavArm,state_to_state_dict(Body_measured)),
-    {Forearm_measured,P1forearm}=measurement_forearm(P1arm,NavForearm,state_to_state_dict(Arm_measured)),
-    Final_state=lists:sublist(Forearm_measured,46)++[[T1]],
-    {ok,Final_state,{Final_state,P1forearm}}.
+    Init_z=[], % initial measurement
+    Init_h=[], % initial measurement jacobian
+    {Head_z,Head_h}=measurement_head(NavHead,New_state_dict,Init_z,Init_h),
+    {Body_z,Body_h}=measurement_body(NavBody,New_state_dict,Head_z,Head_h),
+    {Arm_z,Arm_h}=measurement_arm(NavArm,New_state_dict,Body_z,Body_h),
+    {Z,H}=measurement_forearm(NavForearm,New_state_dict,Arm_z,Arm_h),
+    Hxp=mat:'*'(H,New_state),
+    StartUpdate=hera:timestamp(),
+    {Updated_state,P2}=ekf_update({New_state,P1}, {Hxp,H},mat:eye(length(Z)),Z),
+    EndUpdate=hera:timestamp(),
+    Dt_update=EndUpdate-StartUpdate,
+    Final_state=Updated_state++[[T1]],
+    Final_state_normalized=normalize_quat_state(Final_state),
+    {ok,[Dt_prediction,Dt_update],{Final_state_normalized,P2}}
+    end.
     
 
             
@@ -176,12 +194,12 @@ state_prediction(State)->
     io:format("Dt: ~p~n", [Dt]),
     {ok,New_arm_quat} = kalman_quaternion_predict(Arm_g, Dt, Arm_quat, mat:eye(4)),
     Shoulder_pos = mat:'+'(quatTransfomation(Head_quat,[[0],[-?HEADSHOULDERDISTANCE],[0]]),Head_pos),
-    Shoulder_to_biceps = quatTransfomation(Arm_quat,[[0],[-?SHOULDERBICEPSDISTANCE],[0]]),
+    Shoulder_to_biceps = quatTransfomation(Arm_quat,[[-?SHOULDERBICEPSDISTANCE],[0],[0]]),
     New_arm_pos = mat:'+'(Shoulder_pos,Shoulder_to_biceps),
     % Forearm prediction
     {ok,New_forearm_quat} = kalman_quaternion_predict(Forearm_g, Dt, Forearm_quat, mat:eye(4)),
-    Elbow_pos = mat:'+'(quatTransfomation(Arm_quat,[[0],[-?BICEPSELBOWDISTANCE],[0]]),Shoulder_pos),
-    New_forearm_pos = mat:'+'(Elbow_pos,quatTransfomation(Forearm_quat,[[0],[-?ELBOWWRISTDISTANCE],[0]])),
+    Elbow_pos = mat:'+'(quatTransfomation(Arm_quat,[[-?BICEPSELBOWDISTANCE],[0],[0]]),Shoulder_pos),
+    New_forearm_pos = mat:'+'(Elbow_pos,quatTransfomation(Forearm_quat,[[-?ELBOWWRISTDISTANCE],[0],[0]])),
     % Create a list of new values
     New_values = New_head_quat++New_head_pos++New_head_v++Head_a++Head_g++
                                 New_body_quat++New_body_pos++Body_g++
@@ -190,8 +208,355 @@ state_prediction(State)->
     New_values.
 
 
-jacobian_state_prediction(_) ->
-    mat:eye(46).
+jacobian_state_prediction(State) ->
+    % Here the time is DT
+
+    State_dict_dt=state_to_state_dict(State),
+    Dt=maps:get(time, State_dict_dt),
+    % Create a list of zeros and put one at the Head position
+    Ntoid = maps:from_list(lists:zip(?STATE_KEYS, lists:seq(0, length(?STATE_KEYS) - 1))),
+    [HpNorth,HpUP,HpEast,VpNorth,VpUP,VpEast] = get_position_pred_matrix(Dt, State_dict_dt),
+    % Initialize the position matrices with zeros and set specific values
+    NKeys_with_time = length(maps:keys(State_dict_dt)),
+    NKeys= NKeys_with_time-1,
+    H=mat:zeros(NKeys,NKeys),
+    H1 = set_element(maps:get(hpx, Ntoid) + 1, H, HpNorth),
+    H2 = set_element(maps:get(hpy, Ntoid) + 1, H1, HpUP),
+    H3 = set_element(maps:get(hpz, Ntoid) + 1, H2, HpEast),
+    H4 = set_element(maps:get(h_vx, Ntoid) + 1, H3, VpNorth),
+    H5 = set_element(maps:get(h_vy, Ntoid) + 1, H4, VpUP),
+    H6 = set_element(maps:get(h_vz, Ntoid) + 1, H5, VpEast),
+    
+    % Quat Transformation for Head
+    Quat_pred_line_10=lists:duplicate(NKeys,0),
+    Quat_pred_line_11=set_element(maps:get(hq1, Ntoid) + 1, Quat_pred_line_10, maps:get(h_gx, State_dict_dt)),
+    Quat_pred_line_12=set_element(maps:get(hq2, Ntoid) + 1, Quat_pred_line_11, maps:get(h_gy, State_dict_dt)),
+    Quat_pred_line_13=set_element(maps:get(hq3, Ntoid) + 1, Quat_pred_line_12, maps:get(h_gz, State_dict_dt)),
+    H7 = set_element(maps:get(hq0, Ntoid) + 1, H6, Quat_pred_line_13),
+
+    Quat_pred_line_20=lists:duplicate(NKeys,0),
+    Quat_pred_line_21=set_element(maps:get(hq0, Ntoid) + 1, Quat_pred_line_20, -maps:get(h_gx, State_dict_dt)),
+    Quat_pred_line_22=set_element(maps:get(hq2, Ntoid) + 1, Quat_pred_line_21, -maps:get(h_gz, State_dict_dt)),
+    Quat_pred_line_23=set_element(maps:get(hq3, Ntoid) + 1, Quat_pred_line_22, maps:get(h_gy, State_dict_dt)),
+    H8 = set_element(maps:get(hq1, Ntoid) + 1, H7, Quat_pred_line_23),
+
+    Quat_pred_line_30=lists:duplicate(NKeys,0),
+    Quat_pred_line_31=set_element(maps:get(hq0, Ntoid) + 1, Quat_pred_line_30, -maps:get(h_gy, State_dict_dt)),
+    Quat_pred_line_32=set_element(maps:get(hq1, Ntoid) + 1, Quat_pred_line_31, maps:get(h_gz, State_dict_dt)),
+    Quat_pred_line_33=set_element(maps:get(hq3, Ntoid) + 1, Quat_pred_line_32, -maps:get(h_gx, State_dict_dt)),
+    H9 = set_element(maps:get(hq2, Ntoid) + 1, H8, Quat_pred_line_33),
+
+    Quat_pred_line_40=lists:duplicate(NKeys,0),
+    Quat_pred_line_41=set_element(maps:get(hq0, Ntoid) + 1, Quat_pred_line_40, -maps:get(h_gz, State_dict_dt)),
+    Quat_pred_line_42=set_element(maps:get(hq1, Ntoid) + 1, Quat_pred_line_41, -maps:get(h_gy, State_dict_dt)),
+    Quat_pred_line_43=set_element(maps:get(hq2, Ntoid) + 1, Quat_pred_line_42, maps:get(h_gx, State_dict_dt)),
+    H10 = set_element(maps:get(hq3, Ntoid) + 1, H9, Quat_pred_line_43),
+
+    H11 = set_element(maps:get(h_gx, Ntoid) + 1, H10, set_element(maps:get(h_gx,Ntoid),lists:duplicate(NKeys,0),1)),
+    H12 = set_element(maps:get(h_gy, Ntoid) + 1, H11, set_element(maps:get(h_gy,Ntoid),lists:duplicate(NKeys,0),1)),
+    H13 = set_element(maps:get(h_gz, Ntoid) + 1, H12, set_element(maps:get(h_gz,Ntoid),lists:duplicate(NKeys,0),1)),
+    H14 = set_element(maps:get(h_ax, Ntoid) + 1, H13, set_element(maps:get(h_ax,Ntoid),lists:duplicate(NKeys,0),1)),
+    H15 = set_element(maps:get(h_ay, Ntoid) + 1, H14, set_element(maps:get(h_ay,Ntoid),lists:duplicate(NKeys,0),1)),
+    H16 = set_element(maps:get(h_az, Ntoid) + 1, H15, set_element(maps:get(h_az,Ntoid),lists:duplicate(NKeys,0),1)),
+
+    {Body_x,Body_y,Body_z,Arm_x,Arm_y,Arm_z,Forearm_x,Forearm_y,Forearm_z}=get_jacobian_position_matrix(State_dict_dt, Ntoid),
+
+    H17 = set_element(maps:get(bpx, Ntoid) + 1, H16, Body_x),
+    H18 = set_element(maps:get(bpy, Ntoid) + 1, H17, Body_y),
+    H19 = set_element(maps:get(bpz, Ntoid) + 1, H18, Body_z),
+    H20 = set_element(maps:get(apx, Ntoid) + 1, H19, Arm_x),
+    H21 = set_element(maps:get(apy, Ntoid) + 1, H20, Arm_y),
+    H22 = set_element(maps:get(apz, Ntoid) + 1, H21, Arm_z),
+    H23 = set_element(maps:get(fpx, Ntoid) + 1, H22, Forearm_x),
+    H24 = set_element(maps:get(fpy, Ntoid) + 1, H23, Forearm_y),
+    H25 = set_element(maps:get(fpz, Ntoid) + 1, H24, Forearm_z),
+
+    % Set 1 for acceleration and gyro for Body, Arm and Forearm
+
+    H26=set_element(maps:get(gBpx, Ntoid) + 1, H25, set_element(maps:get(gBpx,Ntoid),lists:duplicate(NKeys,0),1)),
+    H27=set_element(maps:get(gBpy, Ntoid) + 1, H26, set_element(maps:get(gBpy,Ntoid),lists:duplicate(NKeys,0),1)),
+    H28=set_element(maps:get(gBpz, Ntoid) + 1, H27, set_element(maps:get(gBpz,Ntoid),lists:duplicate(NKeys,0),1)),
+    H29=set_element(maps:get(gApx, Ntoid) + 1, H28, set_element(maps:get(gApx,Ntoid),lists:duplicate(NKeys,0),1)),
+    H30=set_element(maps:get(gApy, Ntoid) + 1, H29, set_element(maps:get(gApy,Ntoid),lists:duplicate(NKeys,0),1)),
+    H31=set_element(maps:get(gApz, Ntoid) + 1, H30, set_element(maps:get(gApz,Ntoid),lists:duplicate(NKeys,0),1)),
+    H32=set_element(maps:get(gFpx, Ntoid) + 1, H31, set_element(maps:get(gFpx,Ntoid),lists:duplicate(NKeys,0),1)),
+    H33=set_element(maps:get(gFpy, Ntoid) + 1, H32, set_element(maps:get(gFpy,Ntoid),lists:duplicate(NKeys,0),1)),
+    H34=set_element(maps:get(gFpz, Ntoid) + 1, H33, set_element(maps:get(gFpz,Ntoid),lists:duplicate(NKeys,0),1)),
+
+    % Quat Transformation Arm 
+
+    Quat_pred_line_arm_10=lists:duplicate(NKeys,0),
+    Quat_pred_line_arm_11=set_element(maps:get(aq1, Ntoid) + 1, Quat_pred_line_arm_10, maps:get(gApx, State_dict_dt)),
+    Quat_pred_line_arm_12=set_element(maps:get(aq2, Ntoid) + 1, Quat_pred_line_arm_11, maps:get(gApy, State_dict_dt)),
+    Quat_pred_line_arm_13=set_element(maps:get(aq3, Ntoid) + 1, Quat_pred_line_arm_12, maps:get(gApz, State_dict_dt)),
+    H35 = set_element(maps:get(aq0, Ntoid) + 1, H34, Quat_pred_line_arm_13),
+
+    Quat_pred_line_arm_20=lists:duplicate(NKeys,0),
+    Quat_pred_line_arm_21=set_element(maps:get(aq0, Ntoid) + 1, Quat_pred_line_arm_20, -maps:get(gApx, State_dict_dt)),
+    Quat_pred_line_arm_22=set_element(maps:get(aq2, Ntoid) + 1, Quat_pred_line_arm_21, -maps:get(gApz, State_dict_dt)),
+    Quat_pred_line_arm_23=set_element(maps:get(aq3, Ntoid) + 1, Quat_pred_line_arm_22, maps:get(gApy, State_dict_dt)),
+    H36 = set_element(maps:get(aq1, Ntoid) + 1, H35, Quat_pred_line_arm_23),
+
+    Quat_pred_line_arm_30=lists:duplicate(NKeys,0),
+    Quat_pred_line_arm_31=set_element(maps:get(aq0, Ntoid) + 1, Quat_pred_line_arm_30, -maps:get(gApy, State_dict_dt)),
+    Quat_pred_line_arm_32=set_element(maps:get(aq1, Ntoid) + 1, Quat_pred_line_arm_31, maps:get(gApz, State_dict_dt)),
+    Quat_pred_line_arm_33=set_element(maps:get(aq3, Ntoid) + 1, Quat_pred_line_arm_32, -maps:get(gApx, State_dict_dt)),
+    H37 = set_element(maps:get(aq2, Ntoid) + 1, H36, Quat_pred_line_arm_33),
+
+    Quat_pred_line_arm_40=lists:duplicate(NKeys,0),
+    Quat_pred_line_arm_41=set_element(maps:get(aq0, Ntoid) + 1, Quat_pred_line_arm_40, -maps:get(gApz, State_dict_dt)),
+    Quat_pred_line_arm_42=set_element(maps:get(aq1, Ntoid) + 1, Quat_pred_line_arm_41, -maps:get(gApy, State_dict_dt)),
+    Quat_pred_line_arm_43=set_element(maps:get(aq2, Ntoid) + 1, Quat_pred_line_arm_42, maps:get(gApx, State_dict_dt)),
+    H38 = set_element(maps:get(aq3, Ntoid) + 1, H37, Quat_pred_line_arm_43),
+
+    % Quat Transformation Forearm
+
+    Quat_pred_line_forearm_10=lists:duplicate(NKeys,0),
+    Quat_pred_line_forearm_11=set_element(maps:get(fq1, Ntoid) + 1, Quat_pred_line_forearm_10, maps:get(gFpx, State_dict_dt)),
+    Quat_pred_line_forearm_12=set_element(maps:get(fq2, Ntoid) + 1, Quat_pred_line_forearm_11, maps:get(gFpy, State_dict_dt)),
+    Quat_pred_line_forearm_13=set_element(maps:get(fq3, Ntoid) + 1, Quat_pred_line_forearm_12, maps:get(gFpz, State_dict_dt)),
+    H39 = set_element(maps:get(fq0, Ntoid) + 1, H38, Quat_pred_line_forearm_13),
+
+    Quat_pred_line_forearm_20=lists:duplicate(NKeys,0),
+    Quat_pred_line_forearm_21=set_element(maps:get(fq0, Ntoid) + 1, Quat_pred_line_forearm_20, -maps:get(gFpx, State_dict_dt)),
+    Quat_pred_line_forearm_22=set_element(maps:get(fq2, Ntoid) + 1, Quat_pred_line_forearm_21, -maps:get(gFpz, State_dict_dt)),
+    Quat_pred_line_forearm_23=set_element(maps:get(fq3, Ntoid) + 1, Quat_pred_line_forearm_22, maps:get(gFpy, State_dict_dt)),
+    H40 = set_element(maps:get(fq1, Ntoid) + 1, H39, Quat_pred_line_forearm_23),
+
+    Quat_pred_line_forearm_30=lists:duplicate(NKeys,0),
+    Quat_pred_line_forearm_31=set_element(maps:get(fq0, Ntoid) + 1, Quat_pred_line_forearm_30, -maps:get(gFpy, State_dict_dt)),
+    Quat_pred_line_forearm_32=set_element(maps:get(fq1, Ntoid) + 1, Quat_pred_line_forearm_31, maps:get(gFpz, State_dict_dt)),
+    Quat_pred_line_forearm_33=set_element(maps:get(fq3, Ntoid) + 1, Quat_pred_line_forearm_32, -maps:get(gFpx, State_dict_dt)),
+    H41 = set_element(maps:get(fq2, Ntoid) + 1, H40, Quat_pred_line_forearm_33),
+
+    Quat_pred_line_forearm_40=lists:duplicate(NKeys,0),
+    Quat_pred_line_forearm_41=set_element(maps:get(fq0, Ntoid) + 1, Quat_pred_line_forearm_40, -maps:get(gFpz, State_dict_dt)),
+    Quat_pred_line_forearm_42=set_element(maps:get(fq1, Ntoid) + 1, Quat_pred_line_forearm_41, -maps:get(gFpy, State_dict_dt)),
+    Quat_pred_line_forearm_43=set_element(maps:get(fq2, Ntoid) + 1, Quat_pred_line_forearm_42, maps:get(gFpx, State_dict_dt)),
+    H42 = set_element(maps:get(fq3, Ntoid) + 1, H41, Quat_pred_line_forearm_43),
+
+    % Quat Transformation for Body
+    Quat_pred_line_Body_10=lists:duplicate(NKeys,0),
+    Quat_pred_line_Body_11=set_element(maps:get(bq1, Ntoid) + 1, Quat_pred_line_Body_10, maps:get(gBpx, State_dict_dt)),
+    Quat_pred_line_Body_12=set_element(maps:get(bq2, Ntoid) + 1, Quat_pred_line_Body_11, maps:get(gBpy, State_dict_dt)),
+    Quat_pred_line_Body_13=set_element(maps:get(bq3, Ntoid) + 1, Quat_pred_line_Body_12, maps:get(gBpz, State_dict_dt)),
+    H43 = set_element(maps:get(bq0, Ntoid) + 1, H42, Quat_pred_line_Body_13),
+
+    Quat_pred_line_Body_20=lists:duplicate(NKeys,0),
+    Quat_pred_line_Body_21=set_element(maps:get(bq0, Ntoid) + 1, Quat_pred_line_Body_20, -maps:get(gBpx, State_dict_dt)),
+    Quat_pred_line_Body_22=set_element(maps:get(bq2, Ntoid) + 1, Quat_pred_line_Body_21, -maps:get(gBpz, State_dict_dt)),
+    Quat_pred_line_Body_23=set_element(maps:get(bq3, Ntoid) + 1, Quat_pred_line_Body_22, maps:get(gBpy, State_dict_dt)),
+    H44 = set_element(maps:get(bq1, Ntoid) + 1, H43, Quat_pred_line_Body_23),
+
+    Quat_pred_line_Body_30=lists:duplicate(NKeys,0),
+    Quat_pred_line_Body_31=set_element(maps:get(bq0, Ntoid) + 1, Quat_pred_line_Body_30, -maps:get(gBpy, State_dict_dt)),
+    Quat_pred_line_Body_32=set_element(maps:get(bq1, Ntoid) + 1, Quat_pred_line_Body_31, maps:get(gBpz, State_dict_dt)),
+    Quat_pred_line_Body_33=set_element(maps:get(bq3, Ntoid) + 1, Quat_pred_line_Body_32, -maps:get(gBpx, State_dict_dt)),
+    H45 = set_element(maps:get(bq2, Ntoid) + 1, H44, Quat_pred_line_Body_33),
+
+    Quat_pred_line_Body_40=lists:duplicate(NKeys,0),
+    Quat_pred_line_Body_41=set_element(maps:get(bq0, Ntoid) + 1, Quat_pred_line_Body_40, -maps:get(gBpz, State_dict_dt)),
+    Quat_pred_line_Body_42=set_element(maps:get(bq1, Ntoid) + 1, Quat_pred_line_Body_41, -maps:get(gBpy, State_dict_dt)),
+    Quat_pred_line_Body_43=set_element(maps:get(bq2, Ntoid) + 1, Quat_pred_line_Body_42, maps:get(gBpx, State_dict_dt)),
+    H46 = set_element(maps:get(bq3, Ntoid) + 1, H45, Quat_pred_line_Body_43),
+    H46.
+
+get_position_pred_matrix(Dt, StateDict) ->
+    % Extract quaternion and acceleration components from the state dictionary
+    Ntoid = maps:from_list(lists:zip(?STATE_KEYS, lists:seq(0, length(?STATE_KEYS) - 1))),
+    Q0 = maps:get(hq0, StateDict),
+    Q1 = maps:get(hq1, StateDict),
+    Q2 = maps:get(hq2, StateDict),
+    Q3 = maps:get(hq3, StateDict),
+    Ax = maps:get(h_ax, StateDict),
+    Ay = maps:get(h_ay, StateDict),
+    Az = maps:get(h_az, StateDict),
+
+    % Compute derivatives for 'north'
+    DaNorthDQ0 = 4 * Q0 * Ax - 2 * Q3 * Ay - 2 * Q2 * Az,
+    DaNorthDQ1 = 4 * Q1 * Ax + 2 * Q2 * Ay + 2 * Q3 * Az,
+    DaNorthDQ2 = 2 * Q1 * Ay + 2 * Q0 * Az,
+    DaNorthDQ3 = -2 * Q0 * Ay + 2 * Q1 * Az,
+    DaNorthDAx = 2 * Q0 * Q0 + 2 * Q1 * Q1 - 1,
+    DaNorthDAy = 2 * Q1 * Q2 - 2 * Q0 * Q3,
+    DaNorthDAz = 2 * Q1 * Q3 + 2 * Q0 * Q2,
+
+    % Compute derivatives for 'up'
+    DaUpDQ0 = 2 * Q3 * Ax + 4 * Q0 * Ay - 2 * Q1 * Az,
+    DaUpDQ1 = 2 * Q2 * Ax - 2 * Q0 * Az,
+    DaUpDQ2 = 2 * Q1 * Ax + 4 * Q2 * Ay + 2 * Q3 * Az,
+    DaUpDQ3 = 2 * Q0 * Ax + 2 * Q2 * Az,
+    DaUpDAx = 2 * Q1 * Q2 + 2 * Q0 * Q3,
+    DaUpDAy = 2 * (Q0 * Q0 + Q2 * Q2 - 1),
+    DaUpDAz = 2 * Q2 * Q3 - 2 * Q0 * Q1,
+
+    % Compute derivatives for 'east'
+    DaEastDQ0 = -2 * Q2 * Ax + 2 * Q1 * Ay + 4 * Q0 * Az,
+    DaEastDQ1 = 2 * Q3 * Ax + 2 * Q0 * Ay,
+    DaEastDQ2 = -2 * Q0 * Ax + 2 * Q3 * Ay,
+    DaEastDQ3 = 2 * Q1 * Ax + 2 * Q2 * Ay + 4 * Q3 * Az,
+    DaEastDAx = 2 * Q1 * Q3 - 2 * Q0 * Q2,
+    DaEastDAy = 2 * Q2 * Q3 + 2 * Q0 * Q1,
+    DaEastDAz = 2 * Q0 * Q0 + 2 * Q3 * Q3 - 1,
+
+    % Initialize the position matrices with zeros and set specific values
+    NKeys = length(maps:keys(StateDict))-1,
+
+    PNorth = lists:duplicate(NKeys, 0),
+    PNorth1 = set_element(maps:get(hpx, Ntoid) + 1, PNorth, 1),
+    PNorth2 = set_element(maps:get(h_vx, Ntoid) + 1, PNorth1, Dt),
+    PNorth3 = set_element(maps:get(hq0, Ntoid) + 1, PNorth2, DaNorthDQ0 * Dt),
+    PNorth4 = set_element(maps:get(hq1, Ntoid) + 1, PNorth3, DaNorthDQ1 * Dt),
+    PNorth5 = set_element(maps:get(hq2, Ntoid) + 1, PNorth4, DaNorthDQ2 * Dt),
+    PNorth6 = set_element(maps:get(hq3, Ntoid) + 1, PNorth5, DaNorthDQ3 * Dt),
+    PNorth7 = set_element(maps:get(h_ax, Ntoid) + 1, PNorth6, DaNorthDAx * Dt),
+    PNorth8 = set_element(maps:get(h_ay, Ntoid) + 1, PNorth7, DaNorthDAy * Dt),
+    PNorth9 = set_element(maps:get(h_az, Ntoid) + 1, PNorth8, DaNorthDAz * Dt),
+
+    PUp = lists:duplicate(NKeys, 0),
+    PUp1 = set_element(maps:get(hpy, Ntoid) + 1, PUp, 1),
+    PUp2 = set_element(maps:get(h_vy, Ntoid) + 1, PUp1, Dt),
+    PUp3 = set_element(maps:get(hq0, Ntoid) + 1, PUp2, DaUpDQ0 * Dt),
+    PUp4 = set_element(maps:get(hq1, Ntoid) + 1, PUp3, DaUpDQ1 * Dt),
+    PUp5 = set_element(maps:get(hq2, Ntoid) + 1, PUp4, DaUpDQ2 * Dt),
+    PUp6 = set_element(maps:get(hq3, Ntoid) + 1, PUp5, DaUpDQ3 * Dt),
+    PUp7 = set_element(maps:get(h_ax, Ntoid) + 1, PUp6, DaUpDAx * Dt),
+    PUp8 = set_element(maps:get(h_ay, Ntoid) + 1, PUp7, DaUpDAy * Dt),
+    PUp9 = set_element(maps:get(h_az, Ntoid) + 1, PUp8, DaUpDAz * Dt),
+
+    PEast = lists:duplicate(NKeys, 0),
+    PEast1 = set_element(maps:get(hpz, Ntoid) + 1, PEast, 1),
+    PEast2 = set_element(maps:get(h_vz, Ntoid) + 1, PEast1, Dt),
+    PEast3 = set_element(maps:get(hq0, Ntoid) + 1, PEast2, DaEastDQ0 * Dt),
+    PEast4 = set_element(maps:get(hq1, Ntoid) + 1, PEast3, DaEastDQ1 * Dt),
+    PEast5 = set_element(maps:get(hq2, Ntoid) + 1, PEast4, DaEastDQ2 * Dt),
+    PEast6 = set_element(maps:get(hq3, Ntoid) + 1, PEast5, DaEastDQ3 * Dt),
+    PEast7 = set_element(maps:get(h_ax, Ntoid) + 1, PEast6, DaEastDAx * Dt),
+    PEast8 = set_element(maps:get(h_ay, Ntoid) + 1, PEast7, DaEastDAy * Dt),
+    PEast9 = set_element(maps:get(h_az, Ntoid) + 1, PEast8, DaEastDAz * Dt),
+
+    VNorth =lists:duplicate(NKeys, 0),
+    VNorth1 = set_element(maps:get(h_vx, Ntoid) + 1, VNorth, 1),
+    VNorth2 = set_element(maps:get(hq0, Ntoid) + 1, VNorth1, DaNorthDQ0 * Dt),
+    VNorth3 = set_element(maps:get(hq1, Ntoid) + 1, VNorth2, DaNorthDQ1 * Dt),
+    VNorth4 = set_element(maps:get(hq2, Ntoid) + 1, VNorth3, DaNorthDQ2 * Dt),
+    VNorth5 = set_element(maps:get(hq3, Ntoid) + 1, VNorth4, DaNorthDQ3 * Dt),
+    VNorth6 = set_element(maps:get(h_ax, Ntoid) + 1, VNorth5, DaNorthDAx * Dt),
+    VNorth7 = set_element(maps:get(h_ay, Ntoid) + 1, VNorth6, DaNorthDAy * Dt),
+    VNorth8 = set_element(maps:get(h_az, Ntoid) + 1, VNorth7, DaNorthDAz * Dt),
+
+    VUp =lists:duplicate(NKeys, 0),
+    VUp1 = set_element(maps:get(h_vy, Ntoid) + 1, VUp, 1),
+    VUp2 = set_element(maps:get(hq0, Ntoid) + 1, VUp1, DaUpDQ0 * Dt),
+    VUp3 = set_element(maps:get(hq1, Ntoid) + 1, VUp2, DaUpDQ1 * Dt),
+    VUp4 = set_element(maps:get(hq2, Ntoid) + 1, VUp3, DaUpDQ2 * Dt),
+    VUp5 = set_element(maps:get(hq3, Ntoid) + 1, VUp4, DaUpDQ3 * Dt),
+    VUp6 = set_element(maps:get(h_ax, Ntoid) + 1, VUp5, DaUpDAx * Dt),
+    VUp7 = set_element(maps:get(h_ay, Ntoid) + 1, VUp6, DaUpDAy * Dt),
+    VUp8 = set_element(maps:get(h_az, Ntoid) + 1, VUp7, DaUpDAz * Dt),
+
+    VEast = lists:duplicate(NKeys, 0),
+    VEast1 = set_element(maps:get(h_vz, Ntoid) + 1, VEast, 1),
+    VEast2 = set_element(maps:get(hq0, Ntoid) + 1, VEast1, DaEastDQ0 * Dt),
+    VEast3 = set_element(maps:get(hq1, Ntoid) + 1, VEast2, DaEastDQ1 * Dt),
+    VEast4 = set_element(maps:get(hq2, Ntoid) + 1, VEast3, DaEastDQ2 * Dt),
+    VEast5 = set_element(maps:get(hq3, Ntoid) + 1, VEast4, DaEastDQ3 * Dt),
+    VEast6 = set_element(maps:get(h_ax, Ntoid) + 1, VEast5, DaEastDAx * Dt),
+    VEast7 = set_element(maps:get(h_ay, Ntoid) + 1, VEast6, DaEastDAy * Dt),
+    VEast8 = set_element(maps:get(h_az, Ntoid) + 1, VEast7, DaEastDAz * Dt),
+    
+
+    [PNorth9, PUp9, PEast9, VNorth8, VUp8, VEast8].
+get_jacobian_position_matrix( StateDict, Ntoid) ->
+    % TODO should be addition not set for forearm
+    N = length(maps:keys(StateDict))-1,
+
+    % Body X Position
+    BodyXPosition = lists:duplicate(N, 0),
+    BodyXPosition1 = set_element(maps:get(hq0, Ntoid) + 1, BodyXPosition, -0.6 * maps:get(hq0, StateDict)),
+    BodyXPosition2 = set_element(maps:get(hq1, Ntoid) + 1, BodyXPosition1, -0.6 * maps:get(hq1, StateDict)),
+    BodyXPosition3 = set_element(maps:get(hpx, Ntoid) + 1, BodyXPosition2, 1),
+
+    % Body Y Position
+    BodyYPosition = lists:duplicate(N, 0),
+    BodyYPosition1 = set_element(maps:get(hpy, Ntoid) + 1, BodyYPosition, 1),
+    BodyYPosition2 = set_element(maps:get(hq0, Ntoid) + 1, BodyYPosition1, -0.3 * maps:get(hq3, StateDict)),
+    BodyYPosition3 = set_element(maps:get(hq1, Ntoid) + 1, BodyYPosition2, -0.3 * maps:get(hq2, StateDict)),
+    BodyYPosition4 = set_element(maps:get(hq2, Ntoid) + 1, BodyYPosition3, -0.3 * maps:get(hq1, StateDict)),
+    BodyYPosition5 = set_element(maps:get(hq3, Ntoid) + 1, BodyYPosition4, -0.3 * maps:get(hq0, StateDict)),
+
+    % Body Z Position
+    BodyZPosition = lists:duplicate(N, 0),
+    BodyZPosition1 = set_element(maps:get(hpz, Ntoid) + 1, BodyZPosition, 1),
+    BodyZPosition2 = set_element(maps:get(hq0, Ntoid) + 1, BodyZPosition1, 0.3 * maps:get(hq2, StateDict)),
+    BodyZPosition3 = set_element(maps:get(hq1, Ntoid) + 1, BodyZPosition2, -0.3 * maps:get(hq3, StateDict)),
+    BodyZPosition4 = set_element(maps:get(hq2, Ntoid) + 1, BodyZPosition3, 0.3 * maps:get(hq0, StateDict)),
+    BodyZPosition5 = set_element(maps:get(hq3, Ntoid) + 1, BodyZPosition4, -0.3 * maps:get(hq1, StateDict)),
+
+    % Arm X Position
+    ArmXPosition = lists:duplicate(N, 0),
+    ArmXPosition1 = set_element(maps:get(hpx, Ntoid) + 1, ArmXPosition, 1),
+    ArmXPosition2 = set_element(maps:get(hq0, Ntoid) + 1, ArmXPosition1, 0.3 * maps:get(hq3, StateDict)),
+    ArmXPosition3 = set_element(maps:get(hq1, Ntoid) + 1, ArmXPosition2, -0.3 * maps:get(hq2, StateDict)),
+    ArmXPosition4 = set_element(maps:get(hq2, Ntoid) + 1, ArmXPosition3, -0.3 * maps:get(hq1, StateDict)),
+    ArmXPosition5 = set_element(maps:get(hq3, Ntoid) + 1, ArmXPosition4, 0.3 * maps:get(hq0, StateDict)),
+    ArmXPosition6 = set_element(maps:get(aq0, Ntoid) + 1, ArmXPosition5, -0.6 * maps:get(aq0, StateDict)),
+    ArmXPosition7 = set_element(maps:get(aq1, Ntoid) + 1, ArmXPosition6, -0.6 * maps:get(aq1, StateDict)),
+
+    % Arm Y Position
+    ArmYPosition = lists:duplicate(N, 0),
+    ArmYPosition1 = set_element(maps:get(hpy, Ntoid) + 1, ArmYPosition, 1),
+    ArmYPosition2 = set_element(maps:get(hq0, Ntoid) + 1, ArmYPosition1, -0.6 * maps:get(hq0, StateDict)),
+    ArmYPosition3 = set_element(maps:get(hq2, Ntoid) + 1, ArmYPosition2, -0.6 * maps:get(hq2, StateDict)),
+    ArmYPosition4 = set_element(maps:get(aq0, Ntoid) + 1, ArmYPosition3, -0.3 * maps:get(aq3, StateDict)),
+    ArmYPosition5 = set_element(maps:get(aq1, Ntoid) + 1, ArmYPosition4, -0.3 * maps:get(aq2, StateDict)),
+    ArmYPosition6 = set_element(maps:get(aq2, Ntoid) + 1, ArmYPosition5, -0.3 * maps:get(aq1, StateDict)),
+    ArmYPosition7 = set_element(maps:get(aq3, Ntoid) + 1, ArmYPosition6, -0.3 * maps:get(aq0, StateDict)),
+
+    % Arm Z Position
+    ArmZPosition = lists:duplicate(N, 0),
+    ArmZPosition1 = set_element(maps:get(hpz, Ntoid) + 1, ArmZPosition, 1),
+    ArmZPosition2 = set_element(maps:get(hq0, Ntoid) + 1, ArmZPosition1, -0.3 * maps:get(hq1, StateDict)),
+    ArmZPosition3 = set_element(maps:get(hq1, Ntoid) + 1, ArmZPosition2, -0.3 * maps:get(hq0, StateDict)),
+    ArmZPosition4 = set_element(maps:get(hq2, Ntoid) + 1, ArmZPosition3, -0.3 * maps:get(hq3, StateDict)),
+    ArmZPosition5 = set_element(maps:get(hq3, Ntoid) + 1, ArmZPosition4, -0.3 * maps:get(hq2, StateDict)),
+    ArmZPosition6 = set_element(maps:get(aq0, Ntoid) + 1, ArmZPosition5, 0.3 * maps:get(aq2, StateDict)),
+    ArmZPosition7 = set_element(maps:get(aq1, Ntoid) + 1, ArmZPosition6, -0.3 * maps:get(aq3, StateDict)),
+    ArmZPosition8 = set_element(maps:get(aq2, Ntoid) + 1, ArmZPosition7, 0.3 * maps:get(aq0, StateDict)),
+    ArmZPosition9 = set_element(maps:get(aq3, Ntoid) + 1, ArmZPosition8, -0.3 * maps:get(aq1, StateDict)),
+
+    % Forearm X Position
+    ForearmXPosition = ArmXPosition6,
+    ForearmXPosition1 = set_element(maps:get(aq0, Ntoid) + 1, ForearmXPosition, -0.6 * maps:get(aq0, StateDict)),
+    ForearmXPosition2 = set_element(maps:get(aq1, Ntoid) + 1, ForearmXPosition1, -0.6 * maps:get(aq1, StateDict)),
+    ForearmXPosition3 = set_element(maps:get(fq0, Ntoid) + 1, ForearmXPosition2, -0.6 * maps:get(fq0, StateDict)),
+    ForearmXPosition4 = set_element(maps:get(fq1, Ntoid) + 1, ForearmXPosition3, -0.6 * maps:get(fq1, StateDict)),
+
+    % Forearm Y Position
+    ForearmYPosition = ArmYPosition7,
+    ForearmYPosition1 = set_element(maps:get(aq0, Ntoid) + 1, ForearmYPosition, -0.3 * maps:get(aq3, StateDict)),
+    ForearmYPosition2 = set_element(maps:get(aq1, Ntoid) + 1, ForearmYPosition1, -0.3 * maps:get(aq2, StateDict)),
+    ForearmYPosition3 = set_element(maps:get(aq2, Ntoid) + 1, ForearmYPosition2, -0.3 * maps:get(aq1, StateDict)),
+    ForearmYPosition4 = set_element(maps:get(aq3, Ntoid) + 1, ForearmYPosition3, -0.3 * maps:get(aq0, StateDict)),
+    ForearmYPosition5 = set_element(maps:get(fq0, Ntoid) + 1, ForearmYPosition4, -0.3 * maps:get(fq3, StateDict)),
+    ForearmYPosition6 = set_element(maps:get(fq1, Ntoid) + 1, ForearmYPosition5, -0.3 * maps:get(fq2, StateDict)),
+    ForearmYPosition7 = set_element(maps:get(fq2, Ntoid) + 1, ForearmYPosition6, -0.3 * maps:get(fq1, StateDict)),
+    ForearmYPosition8 = set_element(maps:get(fq3, Ntoid) + 1, ForearmYPosition7, -0.3 * maps:get(fq0, StateDict)),
+
+    % Forearm Z Position
+    ForearmZPosition = ArmZPosition9,
+    ForearmZPosition1 = set_element(maps:get(aq0, Ntoid) + 1, ForearmZPosition, 0.3 * maps:get(aq2, StateDict)),
+    ForearmZPosition2 = set_element(maps:get(aq1, Ntoid) + 1, ForearmZPosition1, -0.3 * maps:get(aq3, StateDict)),
+    ForearmZPosition3 = set_element(maps:get(aq2, Ntoid) + 1, ForearmZPosition2, 0.3 * maps:get(aq0, StateDict)),
+    ForearmZPosition4 = set_element(maps:get(aq3, Ntoid) + 1, ForearmZPosition3, -0.3 * maps:get(aq1, StateDict)),
+    ForearmZPosition5 = set_element(maps:get(fq0, Ntoid) + 1, ForearmZPosition4, 0.3 * maps:get(fq2, StateDict)),
+    ForearmZPosition6 = set_element(maps:get(fq1, Ntoid) + 1, ForearmZPosition5, -0.3 * maps:get(fq3, StateDict)),
+    ForearmZPosition7 = set_element(maps:get(fq2, Ntoid) + 1, ForearmZPosition6, 0.3 * maps:get(fq0, StateDict)),
+    ForearmZPosition8 = set_element(maps:get(fq3, Ntoid) + 1, ForearmZPosition7, -0.3 * maps:get(fq1, StateDict)),
+
+    {BodyXPosition3, BodyYPosition5, BodyZPosition5, ArmXPosition7,
+     ArmYPosition7, ArmZPosition9, ForearmXPosition4, ForearmYPosition8, ForearmZPosition8}.
+
 state_measurement(State) ->
     H=jacobian_state_measurement(State),
     State_without_time=lists:sublist(State,46),
@@ -302,12 +667,13 @@ identity_prediction(State) ->
     lists:sublist(State,46).
 jacobian_identity_prediction(State) ->
     mat:eye(46).
-measurement_head(P0,Nav_data,State_dict_dt) ->   
+measurement_head(Nav_data,State_dict_dt,Current_z,Current_h) ->   
     State_prediction=state_dict_to_state(State_dict_dt),
     io:format("Head_nav_data: ~p~n", [Nav_data]),
     io:format("length: ~p~n", [length(Nav_data)]),
     if length(Nav_data) == 0 -> 
-        {State_prediction,P0};
+        io:format("No data head"),
+        {Current_z,Current_h};
     true ->
         {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
         [Ax,Ay,Az]=Acc,
@@ -321,20 +687,14 @@ measurement_head(P0,Nav_data,State_dict_dt) ->
         false ->
             Qc= mat:'*'(-1,ObservedQuat)            
         end,
-        Z=Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(10),
-        io:format("Z: ~p~n", [Z]),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun head_state_measurement/1,fun jacobian_head_state_measurement/1}, Q,R,Z),
-        Dt=maps:get(time,State_dict_dt),
-        New_state1=NewState ++ [[Dt]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-    {Normalized_new_state,P1}
+        Z=Current_z++Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
+        H=Current_h++jacobian_head_state_measurement(State_dict_dt),
+        {Z,H}
     end.
-measurement_body(P0,Nav_data,State_dict_dt) ->
+measurement_body(Nav_data,State_dict_dt,Current_z,Current_h) ->
     State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
-        {State_prediction,P0};
+        {Current_z,Current_h};
     true ->
         {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
         [Gx,Gy,Gz]=Gyro,
@@ -346,19 +706,14 @@ measurement_body(P0,Nav_data,State_dict_dt) ->
         false ->
             Qc= mat:'*'(-1,ObservedQuat)            
         end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun body_state_measurement/1,fun jacobian_body_state_measurement/1}, Q,R,Z),
-        Dt=maps:get(time,State_dict_dt),
-        New_state1=NewState ++ [[Dt]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        {Normalized_new_state,P1}
+        Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
+        H=Current_h++jacobian_body_state_measurement(State_dict_dt),
+        {Z,H}
     end.   
-measurement_arm(P0,Nav_data,State_dict_dt) ->
+measurement_arm(Nav_data,State_dict_dt,Current_z,Current_h) ->
     State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
-        {State_prediction,P0};
+        {Current_z,Current_h};
     true ->
         {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
         [Gx,Gy,Gz]=Gyro,
@@ -370,19 +725,14 @@ measurement_arm(P0,Nav_data,State_dict_dt) ->
         false ->
             Qc= mat:'*'(-1,ObservedQuat)            
         end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun arm_state_measurement/1,fun jacobian_arm_state_measurement/1}, Q,R,Z),
-        Dt=maps:get(time,State_dict_dt),
-        New_state1=NewState ++ [[Dt]],
-        Normalized_new_state=normalize_quat_state(New_state1),
-        {Normalized_new_state,P1}
+        Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
+        H=Current_h++jacobian_arm_state_measurement(State_dict_dt),
+        {Z,H}
     end.
-measurement_forearm(P0,Nav_data,State_dict_dt) ->
+measurement_forearm(Nav_data,State_dict_dt,Current_z,Current_h) ->
     State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
-        {State_prediction,P0};
+        {Current_z,Current_h};
     true ->
         {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
         [Gx,Gy,Gz]=Gyro,        
@@ -394,14 +744,9 @@ measurement_forearm(P0,Nav_data,State_dict_dt) ->
         false ->
             Qc= mat:'*'(-1,ObservedQuat)            
         end,
-        Z=Qc++[[Gx],[Gy],[Gz]],
-        Q=mat:eye(46),
-        R= mat:eye(7),
-        {NewState,P1}=kalman:ekf({State_prediction,P0}, {fun identity_prediction/1,fun jacobian_identity_prediction/1},{fun forearm_state_measurement/1,fun jacobian_forearm_state_measurement/1}, Q,R,Z),
-        Dt=maps:get(time,State_dict_dt),
-        New_state1=NewState ++ [[Dt]],
-        Normalized_new_state=normalize_quat_state(New_state1),    
-        {Normalized_new_state,P1}
+        Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
+        H=Current_h++jacobian_forearm_state_measurement(State_dict_dt),
+        {Z,H}
     end.
 
 qdot([[Q11], [Q12], [Q13], [Q14]], [[Q21], [Q22], [Q23], [Q24]]) ->
@@ -415,7 +760,6 @@ consttimesVector(C, [X,Y,Z]) ->
 process_nav([]) -> 
     {[],[],[],[]};
 process_nav(Nav) ->
-    io:format("Nav: ~p~n", [Nav]),
     {Acc, Next} = lists:split(3, Nav),
     {Gyro, Mag} = lists:split(3, Next),
     {Acc, Gyro, Mag}. 
@@ -551,11 +895,22 @@ observationModel(Qn,Acc,Mag) ->
     Qme = [[Qme1],[Qme2],[Qme3],[Qme4]],
     Qm=q_product(Qme,Qa),
     unit(conjugateQuaternion(Qm)).
-
-
-
-
-%Hierachical Model with the Head as the parent but enhance Head position using body position
+%% An extended kalman filter without control input
+ekf_predict({X0, P0}, {F, Jf}, Q) ->
+    % Prediction
+    Xp = F(X0),
+    Jfx = Jf(X0),
+    Pp = mat:eval([Jfx, '*', P0, '*´', Jfx, '+', Q]),
+    {Xp,Pp}.
+ekf_update({Xp,Pp},{Hxp,Jhx},R,Z)->
+    % Update
+    S = mat:eval([Jhx, '*', Pp, '*´', Jhx, '+', R]),
+    Sinv = mat:inv(S),
+    K = mat:eval([Pp, '*´', Jhx, '*', Sinv]),
+    Y = mat:'-'(Z, Hxp),
+    X1 = mat:eval([K, '*', Y, '+', Xp]),
+    P1 = mat:'-'(Pp, mat:eval([K, '*', Jhx, '*', Pp])),
+    {X1, P1}.
 conjugateQuaternion([[Q0],[Q1],[Q2],[Q3]]) ->
     [[Q0],[-Q1],[-Q2],[-Q3]].
 fromQuaternionTo3D([[_],[X],[Y],[Z]]) ->
@@ -593,3 +948,8 @@ normalize_quat_state(State) ->
                 Norm_arm_quat++[[maps:get(apx, State_dict)], [maps:get(apy, State_dict)], [maps:get(apz, State_dict)]]++[[maps:get(gApx, State_dict)], [maps:get(gApy, State_dict)], [maps:get(gApz, State_dict)]]++
                 Norm_forearm_quat++[[maps:get(fpx, State_dict)], [maps:get(fpy, State_dict)], [maps:get(fpz, State_dict)]]++[[maps:get(gFpx, State_dict)], [maps:get(gFpy, State_dict)], [maps:get(gFpz, State_dict)]]++[[maps:get(time, State_dict)]],
     New_state.
+% Sets the Nth element of a list to a new value
+% N is 1-based index
+set_element(N, List, Value) ->
+    {Left, [_|Right]} = lists:split(N - 1, List),
+    Left ++ [Value | Right].

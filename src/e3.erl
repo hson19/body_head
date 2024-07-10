@@ -102,19 +102,68 @@ init({R0,C=#cal{gyro={GBx,GBy,GBz}, mag={MBx,MBy,MBz}}}) ->
     {ok, State, Spec}.
 
 
-measure({HeadXpos,BodyXpos,ArmXpos,ForearmXpos,C}) ->
-    LoopCount = 100,
-    loop(LoopCount, HeadXpos, BodyXpos, ArmXpos, ForearmXpos,C).
+measure({HeadXpos,BodyXpos,ArmXpos,ForearmXpos,C}) -> 
 
-loop(0, HeadXpos, BodyXpos, ArmXpos, ForearmXpos,C) ->
+    LoopCount = 100,
+    Host = lists:nthtail(10, atom_to_list(node())),
+    IsBody = lists:prefix("body", Host),
+    IsHead = lists:prefix("head", Host),
+    IsArm = lists:prefix("arm", Host),
+    IsForearm = lists:prefix("forearm", Host),
+    {T1,BodyState,HeadState,ArmState,ForearmState}=fromSensorDataToState(readNewestData(IsBody,IsHead,IsArm,IsForearm)),
+    if IsHead -> 
+        {_,HeadValpos,UpdatedHeadXpos}=loop(LoopCount, HeadXpos,C),
+        UpdatedBodyXpos=BodyXpos,
+        UpdatedArmXpos=ArmXpos,
+        UpdatedForearmXpos=ForearmXpos,
+        {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintHeadValPos,ConstraintBodyValPos}=bodyHeadConstraint(UpdatedBodyXpos,UpdatedHeadXpos,HeadValpos,stateToValpos(UpdatedBodyXpos)),
+        {ConstraintArmXpos,ConstraintArmValpos}=headArmConstraint(ConstraintHeadXpos,UpdatedArmXpos,right),
+        {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(ConstraintArmXpos,UpdatedForearmXpos),
+        Valpos = lists:append([[T1],ConstraintHeadValPos,ConstraintBodyValPos,ConstraintArmValpos,ConstraintForearmValpos]),
+        {ok,Valpos, {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintArmXpos,ConstraintForearmXpos}};        
+    IsBody -> 
+        {_,BodyValpos,UpdatedBodyXpos}=loop(LoopCount, BodyXpos,C),
+        UpdatedHeadXpos=HeadXpos,
+        UpdatedArmXpos=ArmXpos,
+        UpdatedForearmXpos=ForearmXpos,
+        {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintHeadValPos,ConstraintBodyValPos}=bodyHeadConstraint(UpdatedBodyXpos,UpdatedHeadXpos,stateToValpos(UpdatedHeadXpos),BodyValpos),
+        {ConstraintArmXpos,ConstraintArmValpos}=headArmConstraint(ConstraintHeadXpos,UpdatedArmXpos,right),
+        {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(ConstraintArmXpos,UpdatedForearmXpos),
+        Valpos = lists:append([[T1],ConstraintHeadValPos,ConstraintBodyValPos,ConstraintArmValpos,ConstraintForearmValpos]),
+        io:format("TimeHead ~p~n",[hera:timestamp()-T1]),
+        {ok,Valpos, {ConstraintHeadXpos,ConstraintBodyXpos,ConstraintArmXpos,ConstraintForearmXpos}};
+    IsArm -> 
+        {_,ArmValpos,UpdatedArmXpos}=loop(LoopCount, ArmXpos,C),
+        UpdatedHeadXpos=HeadXpos,
+        UpdatedBodyXpos=BodyXpos,
+        UpdatedForearmXpos=ForearmXpos,
+        {ConstraintArmXpos,ConstraintArmValpos}=headArmConstraint(UpdatedHeadXpos,UpdatedArmXpos,right),
+        {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(ConstraintArmXpos,UpdatedForearmXpos),
+        Valpos = lists:append([[T1],stateToValpos(UpdatedHeadXpos),stateToValpos(UpdatedBodyXpos),ConstraintArmValpos,ConstraintForearmValpos]),
+        io:format("TimeArm ~p~n",[hera:timestamp()-T1]),
+        {ok,Valpos, {UpdatedHeadXpos, UpdatedBodyXpos, ConstraintArmXpos,ConstraintForearmXpos}};        
+    IsForearm -> 
+        io:format("IsForearm ~p~n",[IsForearm]),
+        {_,_,UpdatedForearmXpos}=loop(LoopCount, ForearmXpos,C),
+        UpdatedHeadXpos=HeadXpos,
+        UpdatedBodyXpos=BodyXpos,
+        UpdatedArmXpos=ArmXpos,
+        {ConstraintForearmXpos,ConstraintForearmValpos}=armForearmConstraint(UpdatedArmXpos,UpdatedForearmXpos),
+        Valpos = lists:append([[T1],stateToValpos(UpdatedHeadXpos),stateToValpos(UpdatedBodyXpos),stateToValpos(UpdatedArmXpos),ConstraintForearmValpos]),
+        io:format("TimeForearm ~p~n",[hera:timestamp()-T1]),
+        {ok,Valpos, {UpdatedHeadXpos, UpdatedBodyXpos, UpdatedArmXpos,ConstraintForearmXpos}};
+    true -> {undefined, {BodyState, HeadState, ArmState, ForearmState}}
+    end.
+
+loop(0, HeadXpos,C) ->
     {T0Head,HeadPos,HeadPpos,HeadOr,HeadPor,HeadR0}=HeadXpos,
     T1=hera:timestamp(), 
     if 
     ?Debug_info ->Valpos = lists:append([[T1],HeadOr,HeadOr,HeadOr,HeadPos]);% DEBUG INFO
     true -> Valpos = lists:append([HeadOr,HeadPos])
     end,
-    {ok,Valpos, {HeadXpos, BodyXpos, ArmXpos, ForearmXpos,C}}; 
-loop(N, HeadXpos, BodyXpos, ArmXpos, ForearmXpos,C=#cal{gyro={GBx,GBy,GBz},mag={MBx,MBy,MBz}}) ->
+    {ok,Valpos, {HeadXpos,C}}; 
+loop(N, HeadXpos,C=#cal{gyro={GBx,GBy,GBz},mag={MBx,MBy,MBz}}) ->
     {T0Head,HeadPos,HeadPpos,HeadOr,HeadPor,HeadR0}=HeadXpos, 
     [Ax, Ay, Az, Gx, Gy, Gz] = pmod_nav:read(acc, [out_x_xl, out_y_xl, out_z_xl, out_x_g, out_y_g, out_z_g]),
     Acc = [Ax, Ay, Az],
@@ -135,7 +184,7 @@ loop(N, HeadXpos, BodyXpos, ArmXpos, ForearmXpos,C=#cal{gyro={GBx,GBy,GBz},mag={
     HeadXpos1={T1Head,HeadPos0,HeadPpos0,Xor1,Por1,HeadR0},
     % {ok,Valpos, {T1,BodyXpos0,BodyPpos0,Xor1,Por1,BodyR0}}. %TODO chang Xorp to Xor1    
     % Process the data here
-    loop(N - 1, HeadXpos1, BodyXpos, ArmXpos, ForearmXpos,C).
+    loop(N - 1, HeadXpos1,C).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -456,3 +505,79 @@ noNoiseUpdate(Xpos,Ppos,MeasurementPos)->
     [[X],[Y],[Z]]=MeasurementPos,
     [[_],[Vx],[Ax],[_],[Vy],[Ay],[_],[Vz],[Az]]=Xpos,
     {[[X],[Vx],[Ax],[Y],[Vy],[Ay],[Z],[Vz],[Az]],Ppos}. % return the updated position
+
+
+% Read the data from all the sensor, select the newest data
+getNewestSensorData(Data1,Data2,Data3)->
+    {T1Data1,_}=Data1,
+    {T1Data2,_}=Data2,
+    {T1Data3,_}=Data3,
+    if T1Data1 > T1Data2 and (T1Data1 > T1Data3) ->
+        Data1;
+    (T1Data2 > T1Data1 and (T1Data2 > T1Data3)) ->
+        Data2;
+    (T1Data3 > T1Data1 and (T1Data3 > T1Data2)) ->
+        Data3
+    end.
+fromSensorDataToState(Data)->
+    {T1,BodyHeadArmForerarmData}=lists:split(1,Data),
+    {HeadState,BodyHaedArmForArmData}=lists:split(7,BodyHeadArmForerarmData),
+    {BodyState,ArmForearmData}=lists:split(7,BodyHaedArmForArmData),
+    {ArmState,ForearmState}=lists:split(7,ArmForearmData),
+    {T1,BodyState,HeadState,ArmState,ForearmState}.
+readNewestData(IsBody,IsHead,IsArm,IsForearm)->
+    if IsBody==true->
+        DataHead = hera_data:get(e3, body_head@head),
+        HeadSensorData=fromDataTostate(DataHead),
+        DataArm = hera_data:get(e3, body_head@arm),
+        ArmSensorData=fromDataTostate(DataArm),
+        Dataforearm = hera_data:get(e3, body_head@forearm),
+        ForearmSensorData=fromDataTostate(Dataforearm),
+        getNewestSensorData(HeadSensorData,ArmSensorData,ForearmSensorData);
+    IsHead==true->
+        DataBody = hera_data:get(e3, body_head@body),
+        BodySensorData=fromDataTostate(DataBody),
+        DataArm = hera_data:get(e3, body_head@arm),
+        ArmSensorData=fromDataTostate(DataArm),
+        Dataforearm = hera_data:get(e3, body_head@forearm),
+        ForearmSensorData=fromDataTostate(Dataforearm),
+        getNewestSensorData(BodySensorData,ArmSensorData,ForearmSensorData);
+    IsArm==true->
+        DataBody = hera_data:get(e3, body_head@body),
+        BodySensorData=fromDataTostate(DataBody),
+        DataHead = hera_data:get(e3, body_head@head),
+        HeadSensorData=fromDataTostate(DataHead),
+        Dataforearm = hera_data:get(e3, body_head@forearm),
+        ForearmSensorData=fromDataTostate(Dataforearm),
+        getNewestSensorData(BodySensorData,HeadSensorData,ForearmSensorData);
+    IsForearm==true->
+        DataBody = hera_data:get(e3, body_head@body),
+        BodySensorData=fromDataTostate(DataBody),
+        DataHead = hera_data:get(e3, body_head@head),
+        HeadSensorData=fromDataTostate(DataHead),
+        DataArm = hera_data:get(e3, body_head@arm),
+        ArmSensorData=fromDataTostate(DataArm),
+        getNewestSensorData(BodySensorData,HeadSensorData,ArmSensorData);
+    true -> io:format("Error in node name")
+    end.
+
+
+% Data is in the form HeadOr,HeadPos,BodyOr,BodyPos,ArmOr,ArmPos,ForearmOr,ForearmPos
+fromDataTostate(Data)->
+    {Times,HeadBodyArmForearmData}=lists:split(3,Data),
+    {_,_,T1}=Times,
+    % select the first 7 elements of the list
+    [HeadData,BodyArmForearmData]=lists:split(7,HeadBodyArmForearmData),
+    % select the 8th to 15th elements of the list
+    [BodyData,ArmForearmData]=lists:split(7,BodyArmForearmData),
+    % select the 16th to 23th elements of the list
+    [ArmData,ForearmData]=lists:split(7,ArmForearmData),
+    {T1,HeadData,BodyData,ArmData,ForearmData}.
+
+stateToValpos(State)->
+    % {T1,pos,Ppos0,Or,Por,R0}
+    {_,Pos,Ppos,Or,_,_}=State,
+    if ?Debug_info ->Valpos = lists:append([Or,Or,Or,Pos]);% DEBUG INFO
+    true -> Valpos = lists:append([Or,Pos,Ppos])
+    end,
+    Valpos.
