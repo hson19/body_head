@@ -84,8 +84,8 @@ launch(_) ->
 launch_e4(bodypart) ->
     Cn = ets:lookup_element(args,{nav3,node()},2), %renvoie le 2 ième élemet de la liste args avec la clé {nav3,node()} ce qui a été mis dans set_argss
     R0 = ets:lookup_element(args, {e4, node()}, 2),
-    {ok,_} = hera:start_measure(nav3,Cn),
-    {ok,_} = hera:start_measure(e4,R0),
+    % {ok,_} = hera:start_measure(nav3,Cn),
+    {ok,_} = hera:start_measure(e4,{R0,Cn}),
     ok;
 launch_e4(_) ->
     ok.

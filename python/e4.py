@@ -874,12 +874,14 @@ def averageDeltatE4(file,card):
 def updateandmeasuretiem(file,card):
     data=pd.read_csv(file+"/e4_body_head@"+card+".csv")
     #Select the second column
-    TimeData=data.iloc[:,1]
+    TimeData=[float(elem.strip(']')) for elem in data.iloc[:,1]]
+    print("Time data",TimeData)
     Dtupdate=data.iloc[:,2]
     Dtmeasure=data.iloc[:,3]
     Dtupdate= np.mean(Dtupdate)/1000
     Dtmeasure= np.mean(Dtmeasure)/1000
     Dt= np.mean(np.diff(TimeData))/1000
+    print("DT of experiment",Dt)
     return Dtupdate,Dtmeasure,Dt
 print("Update and measure time",updateandmeasuretiem("./measures","head"))
 # file="measures"

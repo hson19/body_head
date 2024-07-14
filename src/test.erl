@@ -13,7 +13,8 @@
                     bpx, bpy, bpz, gBpx, gBpy, gBpz, aq0, aq1, aq2, aq3,
                     apx, apy, apz, gApx, gApy, gApz, fq0, fq1, fq2, fq3,
                     fpx, fpy, fpz, gFpx, gFpy, gFpz,time]).
-
+-export([ekf_predict_time_tracking_loop/1]).
+-export([ekf_update_time_tracking_loop/1]).
 
 %% Initialize the random number generator
 init_random() ->
@@ -51,33 +52,57 @@ generate_random_matrix_helper(N,Length, Min, Max, Acc) ->
 ekf_predict_time_tracking() ->
     init_random(),
     State_prediction = generate_random_list(47, 0, 100),
-    io:format("State prediction: ~p~n", [State_prediction]),
     P0 = mat:eye(46),
-    T1 = hera:timestamp(),
-    
     %% Generate a random list of length 46 and call the EKF predict function
-    {_, _} = e4:ekf_predict({State_prediction, P0}, {fun e4:state_prediction/1, fun e4:jacobian_state_prediction/1}, mat:eye(46)),
-    
-    T2 = hera:timestamp(),
-    io:format("Time taken for ekf_predict: ~p microseconds~n", [T2 - T1]),
-    T2-T1.
+    {_, _} = e4:ekf_predict({State_prediction, P0}, {fun e4:state_prediction/1, fun e4:jacobian_state_prediction/1}, mat:eye(46)).
 ekf_update_time_tracking()->
     init_random(),
-    State_prediction = generate_random_list(46, 0, 100),
-    Z_random=generate_random_list(46, 0, 100),
+    State_prediction = mat:matrix(generate_random_list(46, 0, 100)),
+    Z_random=mat:matrix(generate_random_list(46, 0, 100)),
     P0 = mat:eye(46),
-    T1 = hera:timestamp(),
     
-    Hxp = generate_random_list(46, 0, 100),
-    H = generate_random_matrix(46, 0, 100),
-    R=generate_random_matrix(46, 0, 100),
+    Hxp = mat:matrix(generate_random_list(46, 0, 100)),
+    H = mat:matrix(generate_random_matrix(46, 0, 100)),
+    R=mat:matrix(generate_random_matrix(46, 0, 100)),
 
-    S = mat:eval([H, '*', P0, '*´', H, '+', R]),
-    io:format("S: ~p~n", [S]),
     %% Generate a random list of length 46 and call the EKF predict function
-    {_, _} = e4:ekf_update({State_prediction, P0}, {Hxp,H }, R,Z_random),
-    
-    T2 = hera:timestamp(),
-    io:format("Time taken for ekf_update: ~p microseconds~n", [T2 - T1]),
-    T2-T1.
+    {Time,_} = timer:tc(e4, ekf_update, [{State_prediction, P0}, {Hxp,H }, R,Z_random]),
+    % {Time, _} = timer:tc(e4:ekf_update({State_prediction, P0}, {Hxp,H }, R,Z_random)),
+    Time.
+
+ekf_predict_time_tracking_loop(N) ->
+    % Call N times the ekf_predict_time_tracking function
+    %  and keeps a list of time taken
+    %  returns the mean of the list
+    ekf_predict_time_tracking_loop_helper(N, 0, []).
+ekf_predict_time_tracking_loop_helper(0, Sum, Acc) ->
+    Mean_time_in_microsecond=erlang:floor(Sum/ length(Acc)),
+    Total_time_in_microsecond=Sum,
+
+    Total_time_second=Total_time_in_microsecond/1000000,
+    Mean_time_in_second=Mean_time_in_microsecond/1000000,
+    io:format("Mean Time in second: ~p~n", [Mean_time_in_second]),
+    io:format("Total Time in second: ~p~n", [Total_time_second]);
+ekf_predict_time_tracking_loop_helper(N, Sum, Acc) ->
+    {Time,_} = timer:tc(fun ekf_predict_time_tracking/0), % Time in micro seconds
+    Time_seconds=Time,
+    ekf_predict_time_tracking_loop_helper(N - 1, Sum + Time_seconds, [Time_seconds | Acc]).
+
+ekf_update_time_tracking_loop(N) ->
+    % Call N times the ekf_predict_time_tracking function
+    %  and keeps a list of time taken
+    %  returns the mean of the list
+    ekf_update_time_tracking_loop_helper(N, 0, []).
+ekf_update_time_tracking_loop_helper(0, Sum, Acc) ->
+    Mean_time_in_microsecond=erlang:floor(Sum/ length(Acc)),
+    Total_time_in_microsecond=Sum,
+
+    Total_time_second=Total_time_in_microsecond/1000000,
+    Mean_time_in_second=Mean_time_in_microsecond/1000000,
+    io:format("Mean Time in second: ~p~n", [Mean_time_in_second]),
+    io:format("Total Time in second: ~p~n", [Total_time_second]);
+ekf_update_time_tracking_loop_helper(N, Sum, Acc) ->
+    Time = ekf_update_time_tracking(),
+    ekf_update_time_tracking_loop_helper(N - 1, Sum + Time, [Time | Acc]).
+
 

@@ -28,7 +28,7 @@
                     bpx, bpy, bpz, gBpx, gBpy, gBpz, aq0, aq1, aq2, aq3,
                     apx, apy, apz, gApx, gApy, gApz, fq0, fq1, fq2, fq3,
                     fpx, fpy, fpz, gFpx, gFpy, gFpz,time]).
-
+-record(cal, {gyro, mag}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% API
@@ -46,7 +46,7 @@ calibrate({MBx,MBy,MBz}) ->
 %% Callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init(R0) ->
+init({R0,C}) ->
     Spec = #{
         name => ?MODULE,
         iter => infinity,
@@ -56,65 +56,101 @@ init(R0) ->
     Head_pos=[[0],[0],[0]], % Position Head
     Head_v=[[0],[0],[0]], % V Head
     Head_a=[[0],[0],[0]], % Acc Head
-    Head_quat= dcm2quat(R0),
+    Head_quat= dcm2quat(numerl_matrix_to_erl_matrix(R0)),
 
     
     Body_pos = quatTransfomation(Head_quat,[[-?BODYHEADDISTANCE],[0],[0]]),
-    Body_quat= dcm2quat(R0),
+    Body_quat= dcm2quat(numerl_matrix_to_erl_matrix(R0)),
 
     Arm_pos = quatTransfomation(Head_quat,[[-?HEADSHOULDERDISTANCE],[-?SHOULDERBICEPSDISTANCE],[0]]),
-    Arm_quat= dcm2quat(R0),
+    Arm_quat= dcm2quat(numerl_matrix_to_erl_matrix(R0)),
     
     Forearm_pos= quatTransfomation(Head_quat,[[-?HEADSHOULDERDISTANCE],[-?SHOULDERBICEPSDISTANCE-?BICEPSELBOWDISTANCE-?ELBOWWRISTDISTANCE],[0]]),
-    Forearm_quat= dcm2quat(R0),
+    Forearm_quat= dcm2quat(numerl_matrix_to_erl_matrix(R0)),
 
     P0=mat:eye(46),
-    State = {Head_quat++Head_pos++Head_v++Head_a++[[0],[0],[0]]++Body_quat++Body_pos++[[0],[0],[0]]++Arm_quat++Arm_pos++[[0],[0],[0]]++Forearm_quat++Forearm_pos++[[0],[0],[0]]++[[T0]],P0},
+    State = {Head_quat++Head_pos++Head_v++Head_a++[[0],[0],[0]]++Body_quat++Body_pos++[[0],[0],[0]]++Arm_quat++Arm_pos++[[0],[0],[0]]++Forearm_quat++Forearm_pos++[[0],[0],[0]]++[[T0]],P0,C},
     {ok, State, Spec}.
 
 
-measure({State,P0}) ->
+measure({State,P0,C}) ->
     % TODO : check if we receive measurement
     % TODO : if there is measurement prediction step followed by measurement update
-    DataBody = hera_data:get(nav3, body_head@body),
-    DataHead = hera_data:get(nav3, body_head@head),
-    DataArm = hera_data:get(nav3, body_head@arm),
-    Dataforearm = hera_data:get(nav3, body_head@forearm),
+    Host = lists:nthtail(10, atom_to_list(node())), % TODO CHANGE THIS if node name changes
+    IsBody = lists:prefix("body", Host),
+    IsHead = lists:prefix("head", Host),
+    IsArm = lists:prefix("arm", Host),
+    IsForearm = lists:prefix("forearm", Host),
+
+    
+    Raw_data_head=hera_data:get(e4, body_head@head),
+    Raw_data_body=hera_data:get(e4, body_head@body),
+    Raw_data_arm=hera_data:get(e4, body_head@arm),
+    Raw_data_forearm=hera_data:get(e4, body_head@forearm),
 
     State_dict=state_to_state_dict(State),
     T0=maps:get(time, state_to_state_dict(State)),
     T1 = hera:timestamp(),
-    NavHead = [Data || {_,_,Ts,Data} <- DataHead, T0 < Ts, T1-Ts < 500],    
-    NavBody = [Data || {_,_,Ts,Data} <- DataBody, T0 < Ts, T1-Ts < 500],
-    NavArm = [Data || {_,_,Ts,Data} <- DataArm, T0 < Ts, T1-Ts < 500],
-    NavForearm = [Data || {_,_,Ts,Data} <- Dataforearm, T0 < Ts, T1-Ts < 500],
-    if length(NavHead) == 0 andalso length(NavBody) == 0 andalso length(NavArm) == 0 andalso length(NavForearm) == 0 -> 
-        {undefined, {State, P0}};
-    true ->
-    Dt= (T1-maps:get(time,State_dict))/1000,
-    State_dict_dt=maps:put(time, Dt, State_dict), % change the time to dt
-    State_prediction=state_dict_to_state(State_dict_dt),
-    StartPrediction=hera:timestamp(),
-    {New_state,P1}=ekf_predict({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1}, mat:eye(46)),
-    EndPrediction=hera:timestamp(),
-    Dt_prediction=EndPrediction-StartPrediction,
 
-    New_state_time=New_state++[[T1]],
-    New_state_dict=state_to_state_dict(New_state_time),
-    Init_z=[], % initial measurement
-    Init_h=[], % initial measurement jacobian
-    {Head_z,Head_h}=measurement_head(NavHead,New_state_dict,Init_z,Init_h),
-    {Body_z,Body_h}=measurement_body(NavBody,New_state_dict,Head_z,Head_h),
-    {Arm_z,Arm_h}=measurement_arm(NavArm,New_state_dict,Body_z,Body_h),
-    {Z,H}=measurement_forearm(NavForearm,New_state_dict,Arm_z,Arm_h),
-    Hxp=mat:'*'(H,New_state),
-    StartUpdate=hera:timestamp(),
-    {Updated_state,P2}=ekf_update({New_state,P1}, {Hxp,H},mat:eye(length(Z)),Z),
-    EndUpdate=hera:timestamp(),
-    Dt_update=EndUpdate-StartUpdate,
-    Final_state=Updated_state++[[T1]],
-    Final_state_normalized=normalize_quat_state(Final_state),
-    {ok,[Dt_prediction,Dt_update],{Final_state_normalized,P2}}
+    Nav_head_raw = [Data || {_,_,Ts,Data} <- Raw_data_head, T0 < Ts, T1-Ts < 500],   
+    Nav_body_raw = [Data || {_,_,Ts,Data} <- Raw_data_body, T0 < Ts, T1-Ts < 500],
+    Nav_arm_raw = [Data || {_,_,Ts,Data} <- Raw_data_arm, T0 < Ts, T1-Ts < 500],
+    Nav_forearm_raw = [Data || {_,_,Ts,Data} <- Raw_data_forearm, T0 < Ts, T1-Ts < 500],
+    if length(Nav_head_raw) ==0 andalso length(Nav_body_raw) == 0 andalso length(Nav_arm_raw) == 0 andalso length(Nav_forearm_raw) == 0 -> 
+        Data=read_sensor_data(C),
+        {ok,Data++[0]++[0], {State, P0,C}};
+    true ->
+        if length(Nav_head_raw) == 0 -> Nav_head = [];
+        true -> {Nav_head,_} = lists:split(9,hd(Nav_head_raw))
+        end,
+        if length(Nav_body_raw) == 0 -> NavBody = [];
+        true -> {NavBody,_} = lists:split(9,hd(Nav_body_raw))
+        end,
+        if length(Nav_arm_raw) == 0 -> NavArm = [];
+        true -> {NavArm,_} = lists:split(9,hd(Nav_arm_raw))
+        end,
+        if length(Nav_forearm_raw) == 0 -> NavForearm = [];
+        true -> {NavForearm,_} = lists:split(9,hd(Nav_forearm_raw))
+        end,
+
+        Dt= (T1-maps:get(time,State_dict))/1000,
+        State_dict_dt=maps:put(time, Dt, State_dict), % change the time to dt
+        State_prediction=state_dict_to_state(State_dict_dt),
+        % {New_state,P1}=ekf_predict({State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1}, mat:eye(46)),
+        {Dt_prediction,{New_state,P1}}=timer:tc(e4, ekf_predict, [{State_prediction,P0}, {fun state_prediction/1,fun jacobian_state_prediction/1}, mat:eye(46)]), 
+        Dt_prediction_second=Dt_prediction/1000000,
+        New_state_time=New_state++[[T1]],
+        New_state_dict=state_to_state_dict(New_state_time),
+        Init_z=[], % initial measurement
+        Init_h=[], % initial measurement jacobian
+        {Head_z,Head_h}=measurement_head(Nav_head,New_state_dict,Init_z,Init_h),
+        {Body_z,Body_h}=measurement_body(NavBody,New_state_dict,Head_z,Head_h),
+        {Arm_z,Arm_h}=measurement_arm(NavArm,New_state_dict,Body_z,Body_h),
+        {Z,H}=measurement_forearm(NavForearm,New_state_dict,Arm_z,Arm_h),
+        Numerl_H= numerl:matrix(H),
+        Hxp=mat:'*'(Numerl_H,numerl:matrix(New_state)),
+        % {Updated_state,P2}=ekf_update({numerl:matrix(New_state),P1}, {Hxp,Numerl_H},mat:eye(length(Z)),numerl:matrix(Z)),
+        {Dt_update,{Updated_state,P2}}=timer:tc(e4, ekf_update, [{numerl:matrix(New_state),P1}, {Hxp,Numerl_H},mat:eye(length(Z)),numerl:matrix(Z)]),
+        Dt_update_second=Dt_update/1000000,
+        Final_state=Updated_state++[[T1]],
+        Final_state_normalized=normalize_quat_state(Final_state),
+        if IsHead ->
+            Data = read_sensor_data(C),
+            {ok,Data++[Dt_prediction_second]++[Dt_update_second],{Final_state_normalized,P2,C}};
+        IsBody ->
+            Data = read_sensor_data(C),
+            {ok,Data++[Dt_prediction_second]++[Dt_update_second],{Final_state_normalized,P2,C}};
+        IsArm ->
+            Data = read_sensor_data(C),
+            {ok,Data++[Dt_prediction_second]++[Dt_update_second],{Final_state_normalized,P2,C}};
+        IsForearm ->
+            Data = read_sensor_data(C),
+            {ok,Data++[Dt_prediction_second]++[Dt_update_second],{Final_state_normalized,P2,C}};
+        true ->
+            io:format("ERROR !!!!!"),
+            {ok,[Dt_prediction_second,Dt_update_second],{Final_state_normalized,P2,C}}
+        end
+
     end.
     
 
@@ -122,41 +158,6 @@ measure({State,P0}) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Initialize state_dict
-getNewestSensorData([], [], [], []) ->
-    io:format("All data lists are empty~n"),
-    {[], none};
-getNewestSensorData(Head_data, Body_data, Arm_data, Forearm_data) ->
-    DataLists = [[head]++Head_data, [body]++Body_data, [arm]++Arm_data, [forearm]++Forearm_data],
-    % Ensure each list has at least one element and the first element is a number (T1)
-    ValidDataLists = lists:filter(fun
-        (Data) when is_list(Data), length(Data) > 1-> true;
-        (_) -> false
-    end, DataLists),
-    io:format("ValidDataLists: ~p~n", [ValidDataLists]),
-    case ValidDataLists of
-        [] ->
-            io:format("All data lists are empty or invalid~n"),
-            {[], none};
-        _ ->
-            % Convert lists to tuples {T1, Data}
-            Tuples = lists:map(fun([Card |[[T1 | Rest]]]) -> {T1, Rest,Card} end, ValidDataLists),
-            io:format("Tuples: ~p~n", [Tuples]),
-            % Find the tuple with the smallest T1
-            MinTuple = lists:max(Tuples),
-            io:format("MinTuple: ~p~n", [MinTuple]),
-            io:format("Head_data: ~p~n", [Head_data]),
-
-            % Match MinTuple to the corresponding data and return
-            case MinTuple of
-            {T1, Data, Card} when Card == head -> {Data, head};
-            {T1, Data, Card} when Card == body -> {Data, body};
-            {T1, Data, Card} when Card == arm -> {Data, arm};
-            {T1, Data, Card} when Card == forearm -> {Data, forearm};
-            {T1, Data, Card} -> {Data, none}
-            end
-    end.
-
 state_to_state_dict(Values) ->
     % List of initial values corresponding to the keys
     lists:foldl(fun({Key, [Value]}, Acc) ->
@@ -187,24 +188,21 @@ state_prediction(State)->
     {ok,New_head_pos,New_head_v,_} = kalman_position_predict(Dt, Head_quat,Head_pos,Head_v,Head_a, mat:eye(9)), % don't need the new ax ?
     % Body prediction
     {ok,New_body_quat} = kalman_quaternion_predict(Body_g, Dt, Body_quat, mat:eye(4)),
-    New_body_pos = mat:'+'(quatTransfomation(Head_quat,[[0],[-?BODYHEADDISTANCE],[0]]),Head_pos),
+    New_body_pos = mat:'+'(numerl:matrix(quatTransfomation(Head_quat,[[0],[-?BODYHEADDISTANCE],[0]])),numerl:matrix(Head_pos)),
     % Arm prediction
-    io:format("Arm_g: ~p~n", [Arm_g]),
-    io:format("Arm_quat: ~p~n", [Arm_quat]),
-    io:format("Dt: ~p~n", [Dt]),
     {ok,New_arm_quat} = kalman_quaternion_predict(Arm_g, Dt, Arm_quat, mat:eye(4)),
-    Shoulder_pos = mat:'+'(quatTransfomation(Head_quat,[[0],[-?HEADSHOULDERDISTANCE],[0]]),Head_pos),
-    Shoulder_to_biceps = quatTransfomation(Arm_quat,[[-?SHOULDERBICEPSDISTANCE],[0],[0]]),
+    Shoulder_pos = mat:'+'(numerl:matrix(quatTransfomation(Head_quat,[[0],[-?HEADSHOULDERDISTANCE],[0]])),numerl:matrix(Head_pos)),
+    Shoulder_to_biceps = numerl:matrix(quatTransfomation(Arm_quat,[[-?SHOULDERBICEPSDISTANCE],[0],[0]])),
     New_arm_pos = mat:'+'(Shoulder_pos,Shoulder_to_biceps),
     % Forearm prediction
     {ok,New_forearm_quat} = kalman_quaternion_predict(Forearm_g, Dt, Forearm_quat, mat:eye(4)),
-    Elbow_pos = mat:'+'(quatTransfomation(Arm_quat,[[-?BICEPSELBOWDISTANCE],[0],[0]]),Shoulder_pos),
-    New_forearm_pos = mat:'+'(Elbow_pos,quatTransfomation(Forearm_quat,[[-?ELBOWWRISTDISTANCE],[0],[0]])),
+    Elbow_pos = mat:'+'(numerl:matrix(quatTransfomation(Arm_quat,[[-?BICEPSELBOWDISTANCE],[0],[0]])),Shoulder_pos),
+    New_forearm_pos = mat:'+'(Elbow_pos,numerl:matrix(quatTransfomation(Forearm_quat,[[-?ELBOWWRISTDISTANCE],[0],[0]]))),
     % Create a list of new values
     New_values = New_head_quat++New_head_pos++New_head_v++Head_a++Head_g++
-                                New_body_quat++New_body_pos++Body_g++
-                                New_arm_quat++New_arm_pos++Arm_g++
-                                New_forearm_quat++New_forearm_pos++Forearm_g,
+                                New_body_quat++transpose(numerl:mtfl(New_body_pos))++Body_g++
+                                New_arm_quat++transpose(numerl:mtfl(New_arm_pos))++Arm_g++
+                                New_forearm_quat++transpose(numerl:mtfl(New_forearm_pos))++Forearm_g,
     New_values.
 
 
@@ -219,7 +217,9 @@ jacobian_state_prediction(State) ->
     % Initialize the position matrices with zeros and set specific values
     NKeys_with_time = length(maps:keys(State_dict_dt)),
     NKeys= NKeys_with_time-1,
-    H=mat:zeros(NKeys,NKeys),
+    % H=numerl_matrix_to_erl_matrix(mat:zeros(NKeys,NKeys)),
+    % H NxN matrix of 0
+    H = lists:duplicate(NKeys,lists:duplicate(NKeys,0)),
     H1 = set_element(maps:get(hpx, Ntoid) + 1, H, HpNorth),
     H2 = set_element(maps:get(hpy, Ntoid) + 1, H1, HpUP),
     H3 = set_element(maps:get(hpz, Ntoid) + 1, H2, HpEast),
@@ -570,7 +570,7 @@ head_state_measurement(State)->
     State_without_time=lists:sublist(State,46),
     Result=mat:'*'(H,State_without_time),
     Result.
-jacobian_head_state_measurement(State) ->
+jacobian_head_state_measurement(_State) ->
       H=[ create_list_with_one_at(0,46),
         create_list_with_one_at(1,46),
         create_list_with_one_at(2,46),
@@ -632,24 +632,22 @@ jacobian_forearm_state_measurement(State) ->
 kalman_quaternion_predict(Gyro,Dt,Quat,P0) ->
     Conj_quat = conjugateQuaternion(Quat),
     [[Wx],[Wy],[Wz]] = Gyro,
-    Omega =[ 
+    Omega =numerl:matrix([ 
         [0,Wx,Wy,Wz],
         [-Wx,0,-Wz,Wy],
         [-Wy,Wz,0,-Wx],
         [-Wz,-Wy,Wx,0]
-    ],
+    ]),
     F = mat:'+'(mat:eye(4), mat:'*'(0.5*Dt, Omega)),
     Q = mat:diag([?VAR_Q,?VAR_Q,?VAR_Q,?VAR_Q]),
-    {Xorp, _} = kalman:kf_predict({Conj_quat,P0}, F, Q),
-
-    UnitXorp = unit(conjugateQuaternion(Xorp)),
-    io:format("predicted quat: ~p~n", [UnitXorp]),
+    {Xorp, _} = kalman:kf_predict({numerl:matrix(Conj_quat),P0}, F, Q),
+    UnitXorp = unit(conjugateQuaternion(transpose(numerl:mtfl(Xorp)))),
     {ok,UnitXorp}.
 kalman_position_predict(Dt,Quat,[[X],[Y],[Z]],[[Vx],[Vy],[Vz]],Acc,P0) ->
     % state have quaternion, position, velocity and acceleration
     [[Ax],[Ay],[Az]]= quatTransfomation(Quat,Acc), % TODO chehck if conjugate or not ??
     State = [[X],[Vx],[Ax],[Y],[Vy],[Ay],[Z],[Vz],[Az]],
-    F = [
+    F = numerl:matrix([
         [1,Dt,(Dt*Dt)/2,0,0,0,0,0,0], % North
         [0,1,Dt,0,0,0,0,0,0], % V_North
         [0,0,1,0,0,0,0,0,0], % Acc_North
@@ -659,23 +657,19 @@ kalman_position_predict(Dt,Quat,[[X],[Y],[Z]],[[Vx],[Vy],[Vz]],Acc,P0) ->
         [0,0,0,0,0,0,1,Dt,(Dt*Dt)/2], % EAST
         [0,0,0,0,0,0,0,1,Dt], % V_EAST
         [0,0,0,0,0,0,0,0,1] % Acc_EAST
-    ],
+    ]),
     Q = mat:diag([?VAR_P,?VAR_P,?VAR_AL, ?VAR_P,?VAR_P,?VAR_AL, ?VAR_P,?VAR_P,?VAR_AL]),
-    {[[New_x],[New_vx],[New_ax],[New_y],[New_vy],[New_ay],[New_z],[New_vz],[New_az]], _} = kalman:kf_predict({State,P0}, F, Q),
+    {Numerl_state,_}=kalman:kf_predict({numerl:matrix(State),P0}, F, Q),
+    [New_x,New_vx,New_ax,New_y,New_vy,New_ay,New_z,New_vz,New_az] = numerl:mtfl(Numerl_state),
     {ok, [[New_x],[New_y],[New_z]],[[New_vx],[New_vy],[New_vz]],[[New_ax],[New_ay],[New_az]]}.
-identity_prediction(State) ->
-    lists:sublist(State,46).
-jacobian_identity_prediction(State) ->
-    mat:eye(46).
-measurement_head(Nav_data,State_dict_dt,Current_z,Current_h) ->   
-    State_prediction=state_dict_to_state(State_dict_dt),
-    io:format("Head_nav_data: ~p~n", [Nav_data]),
-    io:format("length: ~p~n", [length(Nav_data)]),
-    if length(Nav_data) == 0 -> 
+
+
+measurement_head(Nav_data,State_dict_dt,Current_z,Current_h) ->
+    if length(Nav_data) < 9 -> 
         io:format("No data head"),
         {Current_z,Current_h};
     true ->
-        {Acc, Gyro, Mag}=process_nav(hd(Nav_data)),
+        {Acc, Gyro, Mag}=process_nav(Nav_data),
         [Ax,Ay,Az]=Acc,
         [Gx,Gy,Gz]=Gyro,
         Qhead=[[maps:get(hq0, State_dict_dt)], [maps:get(hq1, State_dict_dt)], [maps:get(hq2, State_dict_dt)], [maps:get(hq3, State_dict_dt)]],
@@ -685,14 +679,13 @@ measurement_head(Nav_data,State_dict_dt,Current_z,Current_h) ->
         true ->
             Qc= ObservedQuat;
         false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
+            Qc= mat:'*'(-1,numerl:matrix(ObservedQuat))            
         end,
         Z=Current_z++Qc++[[Ax],[Ay],[Az]]++[[Gx],[Gy],[Gz]],
         H=Current_h++jacobian_head_state_measurement(State_dict_dt),
         {Z,H}
     end.
 measurement_body(Nav_data,State_dict_dt,Current_z,Current_h) ->
-    State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
         {Current_z,Current_h};
     true ->
@@ -704,14 +697,13 @@ measurement_body(Nav_data,State_dict_dt,Current_z,Current_h) ->
         true ->
             Qc= ObservedQuat;
         false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
+            Qc= mat:'*'(-1,numerl:matrix(ObservedQuat))            
         end,
         Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
         H=Current_h++jacobian_body_state_measurement(State_dict_dt),
         {Z,H}
     end.   
 measurement_arm(Nav_data,State_dict_dt,Current_z,Current_h) ->
-    State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
         {Current_z,Current_h};
     true ->
@@ -723,14 +715,13 @@ measurement_arm(Nav_data,State_dict_dt,Current_z,Current_h) ->
         true ->
             Qc= ObservedQuat;
         false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
+            Qc= mat:'*'(-1,numerl:matrix(ObservedQuat))            
         end,
         Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
         H=Current_h++jacobian_arm_state_measurement(State_dict_dt),
         {Z,H}
     end.
 measurement_forearm(Nav_data,State_dict_dt,Current_z,Current_h) ->
-    State_prediction=state_dict_to_state(State_dict_dt),
     if length(Nav_data) == 0 -> 
         {Current_z,Current_h};
     true ->
@@ -742,7 +733,7 @@ measurement_forearm(Nav_data,State_dict_dt,Current_z,Current_h) ->
         true ->
             Qc= ObservedQuat;
         false ->
-            Qc= mat:'*'(-1,ObservedQuat)            
+            Qc= mat:'*'(-1,numerl:matrix(ObservedQuat))            
         end,
         Z=Current_z++Qc++[[Gx],[Gy],[Gz]],
         H=Current_h++jacobian_forearm_state_measurement(State_dict_dt),
@@ -790,7 +781,7 @@ ahrs(Acc, Mag) ->
     Down = unit([-A || A <- Acc]),
     East = unit(cross_product(Down, unit(Mag))),
     North = unit(cross_product(East, Down)),
-    mat:tr([North, UP, East]).
+    mat:tr(numerl:matrix([North, UP, East])).
 
 
 cross_product([[U1],[U2],[U3]], [[V1],[V2],[V3]]) -> 
@@ -857,14 +848,11 @@ observationModel(Qn,Acc,Mag) ->
     Mua = 1, %0.005, %TODO FIND VALUE 
     [[Q0],[Q1],[Q2],[Q3]]=Qn,
     QGtoL = [[Q0],[-Q1],[-Q2],[-Q3]],
-    C= q2dcm(QGtoL), % Q should be a 4x1 vector
+    % C= q2dcm(QGtoL), % Q should be a 4x1 vector
     Gn = [[0],[-1],[0]], % NOT 9.81 because we need unit vector  VHat*Vg= VHat*Vg/(|Vhat|*|Vg|)*cos(theta)
-    MagN= [[1],[1],[0]], 
     % estimated vector of gravity and magnetic field
     % VgHat= unit(mat:'*'(C,Gn)),
-    VgHat = unit(quatTransfomation(QGtoL,[[0],[-1],[0]])),
-    [[VgHatX],[VgHatY],[VgHatZ]]=VgHat,
-
+    VgHat = unit(quatTransfomation(QGtoL,Gn)),
     % measured vector of gravity  and magnetic field
     Vg= unit([[-A]||A<-Acc]),
 
@@ -897,28 +885,26 @@ observationModel(Qn,Acc,Mag) ->
     unit(conjugateQuaternion(Qm)).
 %% An extended kalman filter without control input
 ekf_predict({X0, P0}, {F, Jf}, Q) ->
+    % ALL THE MATRICES ARE NUMERL MATRICES Expect X0
     % Prediction
     Xp = F(X0),
     Jfx = Jf(X0),
-    Pp = mat:eval([Jfx, '*', P0, '*´', Jfx, '+', Q]),
+    Numerl_jfx=numerl:matrix(Jfx),
+
+    Pp = mat:eval([Numerl_jfx, '*', P0, '*´', Numerl_jfx, '+', Q]),
     {Xp,Pp}.
 ekf_update({Xp,Pp},{Hxp,Jhx},R,Z)->
+    % ALL THE MATRICES ARE NUMERL MATRICES 
     % Update
     S = mat:eval([Jhx, '*', Pp, '*´', Jhx, '+', R]),
     Sinv = mat:inv(S),
     K = mat:eval([Pp, '*´', Jhx, '*', Sinv]),
     Y = mat:'-'(Z, Hxp),
-    X1 = mat:eval([K, '*', Y, '+', Xp]),
+    X1 = numerl:mtfl(mat:eval([K, '*', Y, '+', Xp])),
     P1 = mat:'-'(Pp, mat:eval([K, '*', Jhx, '*', Pp])),
-    {X1, P1}.
+    {transpose(X1), P1}.
 conjugateQuaternion([[Q0],[Q1],[Q2],[Q3]]) ->
     [[Q0],[-Q1],[-Q2],[-Q3]].
-fromQuaternionTo3D([[_],[X],[Y],[Z]]) ->
-    [[X],[Y],[Z]].
-noNoiseUpdate(Xpos,Ppos,MeasurementPos)->
-    [[X],[Y],[Z]]=MeasurementPos,
-    [[_],[Vx],[Ax],[_],[Vy],[Ay],[_],[Vz],[Az]]=Xpos,
-    {[[X],[Vx],[Ax],[Y],[Vy],[Ay],[Z],[Vz],[Az]],Ppos}. % return the updated position
 create_list_with_one_at(Index, Length) ->
     create_list_with_one_at(Index, Length, 0).
 
@@ -928,8 +914,6 @@ create_list_with_one_at(Index, Length, Index) ->
     [1 | create_list_with_one_at(Index, Length, Index + 1)]; % Insert 1 at the specified index
 create_list_with_one_at(Index, Length, CurrIndex) ->
     [0 | create_list_with_one_at(Index, Length, CurrIndex + 1)].
-transpose_vector(Vector) ->
-    [[Element] || Element <- Vector].
 normalize_quat_state(State) ->
     State_dict = state_to_state_dict(State),
     Head_quat = [[maps:get(hq0, State_dict)], [maps:get(hq1, State_dict)], [maps:get(hq2, State_dict)], [maps:get(hq3, State_dict)]],
@@ -953,3 +937,29 @@ normalize_quat_state(State) ->
 set_element(N, List, Value) ->
     {Left, [_|Right]} = lists:split(N - 1, List),
     Left ++ [Value | Right].
+read_sensor_data(#cal{gyro={GBx,GBy,GBz}, mag={MBx,MBy,MBz}}) ->
+    [Ax,Ay,Az, Gx,Gy,Gz] = pmod_nav:read(acc, [
+    out_x_xl,out_y_xl,out_z_xl,
+    out_x_g,out_y_g,out_z_g]),
+    Acc = [Ax,Ay,-Az],
+    Gyro = [(Gx-GBx),Gy-GBy,-(Gz-GBz)],
+    [Mx,My,Mz] = pmod_nav:read(mag, [out_x_m, out_y_m, out_z_m]),
+    Data = lists:append([
+        scale(Acc, 9.81),
+        scale(Gyro, math:pi()/180),
+        [-(Mx-MBx),My-MBy,-(Mz-MBz)]
+    ]),
+    Data.
+transpose([]) ->
+    [];
+transpose([ Head|Tail]) ->
+    [[Head] | transpose(Tail)].
+numerl_matrix_to_erl_matrix(Numerl_matrix) ->
+    {_,N,_M,_}=Numerl_matrix,
+    Array=mat:to_array(Numerl_matrix),
+    numerl_matrix_to_erl_matrix(Array,N,[]).
+numerl_matrix_to_erl_matrix([], _N, Acc)->Acc;
+numerl_matrix_to_erl_matrix(List, N, Acc)->
+    {Row, Rest} = lists:split(N, List),
+    numerl_matrix_to_erl_matrix(Rest, N, [Row | Acc]).
+% Helper function with an accumulator
